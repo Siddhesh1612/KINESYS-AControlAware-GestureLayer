@@ -1,4 +1,4 @@
-"""Main KINESYS adaptive runtime for COMMIT 4."""
+"""Main KINESYS adaptive runtime for COMMIT 5."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from config import (
     GESTURE_THREE_FINGER_LEFT,
     GESTURE_THREE_FINGER_RIGHT,
     GESTURE_TWO_FINGER_SWIPE,
+    GESTURE_TWO_HANDS_X,
     GESTURE_UNKNOWN,
     FATIGUE_ALPHA,
     HUD_FONT_SCALE,
@@ -63,6 +64,8 @@ from config import (
     MODIFIER_CTRL,
     MODIFIER_NONE,
     MODIFIER_SHIFT,
+    RECENT_CHARS_LIMIT,
+    RECOGNIZED_TEXT_PREVIEW_LENGTH,
     SMOOTHING_ALPHA,
     SCROLL_DELTA_DIVISOR,
     SCROLL_MIN_STEP,
@@ -88,7 +91,7 @@ JPEG_QUALITY_PARAM = "IMWRITE_JPEG_QUALITY"
 PANEL_PADDING_TOP = 12
 PANEL_PADDING_BOTTOM = 18
 PANEL_WIDTH = 520
-HUD_LINE_COUNT = 11
+HUD_LINE_COUNT = 13
 TEXT_SHADOW_OFFSET = 2
 KEY_MASK = 0xFF
 LINE_INDEX_OFFSET = 1
@@ -129,7 +132,9 @@ ACTION_UNCOMMENT_LINE = "uncomment_line"
 VOICE_FATIGUE = "Please take a break"
 VOICE_LOCK = "Kinesys locked"
 VOICE_UNLOCK = "Kinesys unlocked"
+VOICE_WRITE_MODE = "Write mode"
 VOICE_TERMINATED = "Kinesys off"
+WRITE_BACKSPACE_TOKEN = "<BACKSPACE>"
 
 DISPLAY_STATE_COLORS = {
     STATE_IDLE: (136, 135, 128),
@@ -186,7 +191,7 @@ class StabilizedValueTracker:
 
 
 class KinesysGestureEngineApp:
-    """Run the COMMIT 4 gesture engine with context-aware adaptive behavior."""
+    """Run the COMMIT 5 gesture engine with macros, analytics, and write mode."""
 
     def __init__(self) -> None:
         """Initialize state that is independent from external runtime dependencies."""
@@ -210,9 +215,15 @@ class KinesysGestureEngineApp:
         self._context_engine = None
         self._gesture_trainer = None
         self._fatigue_detector = None
+        self._analytics_tracker = None
+        self._macro_engine = None
+        self._air_writer = None
         self._fatigue_level = SHARED_STATE_DEFAULT_FATIGUE
         self._fatigue_jitter = SHARED_STATE_DEFAULT_FATIGUE
         self._active_smoothing_alpha = SMOOTHING_ALPHA
+        self._recognized_text = SHARED_STATE_DEFAULT_TEXT
+        self._last_chars: list[str] = []
+        self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
 
     def run(self) -> int:
         """Start the runtime after validating setup and runtime dependencies."""
@@ -229,22 +240,28 @@ class KinesysGestureEngineApp:
             return 1
 
         try:
+            from air_writer import AirWriter
+            from analytics import AnalyticsTracker
             from context_engine import ContextEngine
             from cursor_controller import CursorController
             from fatigue_detector import FatigueDetector
             from gesture_trainer import GestureTrainer
             from hand_tracker import HandTracker
+            from macro_engine import MacroEngine
             from voice_feedback import VoiceFeedback
         except Exception as exc:
             LOGGER.exception("Runtime module import failed: %s", exc)
             return 1
 
         capture = None
+        air_writer = None
+        analytics_tracker = None
         context_engine = None
         tracker = None
         cursor = None
         fatigue_detector = None
         gesture_trainer = None
+        macro_engine = None
         voice_feedback = None
 
         try:
@@ -262,6 +279,12 @@ class KinesysGestureEngineApp:
             cursor = CursorController()
             fatigue_detector = FatigueDetector()
             self._fatigue_detector = fatigue_detector
+            analytics_tracker = AnalyticsTracker()
+            self._analytics_tracker = analytics_tracker
+            macro_engine = MacroEngine()
+            self._macro_engine = macro_engine
+            air_writer = AirWriter()
+            self._air_writer = air_writer
             voice_feedback = VoiceFeedback()
             font_face = getattr(cv2, FONT_FACE)
             jpeg_quality_param = getattr(cv2, JPEG_QUALITY_PARAM)
@@ -283,9 +306,9 @@ class KinesysGestureEngineApp:
                 self._current_context = context_snapshot
                 self._handle_app_switch(context_snapshot=context_snapshot, voice_feedback=voice_feedback)
 
-                if self._handle_termination(analysis):
+                if self._handle_termination(analysis=analysis, context_snapshot=context_snapshot):
                     voice_feedback.speak(VOICE_TERMINATED)
-                    self._state = STATE_TERMINATED
+                    self._set_state(STATE_TERMINATED)
                     break
 
                 stabilized_gesture = self._action_hold_tracker.update(analysis.action_gesture)
@@ -345,19 +368,31 @@ class KinesysGestureEngineApp:
                 tracker.close()
             if "cv2" in locals():
                 cv2.destroyAllWindows()
+            if air_writer is not None:
+                air_writer.shutdown()
             if voice_feedback is not None:
                 voice_feedback.shutdown()
+            self._air_writer = None
+            self._analytics_tracker = None
             self._context_engine = None
             self._gesture_trainer = None
             self._fatigue_detector = None
+            self._macro_engine = None
             if self._shared_state_manager is not None:
                 self._shared_state_manager.shutdown()
 
-    def _handle_termination(self, analysis: Any) -> bool:
+    def _handle_termination(self, analysis: Any, context_snapshot: Any) -> bool:
         """Return whether the two-hand termination gesture has stabilized."""
 
         stabilized_value = self._termination_hold_tracker.update(analysis.termination_detected)
-        return bool(stabilized_value is TERMINATION_READY_VALUE)
+        termination_ready = bool(stabilized_value is TERMINATION_READY_VALUE)
+        if termination_ready:
+            self._record_gesture_event(
+                gesture_name=GESTURE_TWO_HANDS_X,
+                analysis=analysis,
+                context_snapshot=context_snapshot,
+            )
+        return termination_ready
 
     def _apply_personal_gesture_override(self, analysis: Any) -> None:
         """Override the default action gesture when the personal KNN model is confident."""
@@ -425,19 +460,25 @@ class KinesysGestureEngineApp:
                 voice_feedback.speak(VOICE_UNLOCK)
             self._set_state(STATE_IDLE)
             cursor.reset()
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_CLOSED_FIST:
             self._set_state(STATE_LOCK)
             cursor.reset()
             voice_feedback.speak(VOICE_LOCK)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if self._state == STATE_LOCK:
             return
 
+        if self._state == STATE_WRITE:
+            return
+
         if stabilized_gesture == GESTURE_INDEX_POINT:
             self._set_state(STATE_CURSOR)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_PINCH:
@@ -447,13 +488,21 @@ class KinesysGestureEngineApp:
                 cursor=cursor,
                 modifier_active=analysis.modifier_active,
             )
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_TWO_FINGER_SWIPE:
             self._set_state(STATE_SCROLL)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_PEACE_SIGN:
+            if analysis.modifier_active == MODIFIER_SHIFT:
+                self._set_state(STATE_WRITE)
+                voice_feedback.speak(VOICE_WRITE_MODE)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+
             if self._dispatch_context_action(
                 gesture_name=stabilized_gesture,
                 analysis=analysis,
@@ -461,17 +510,32 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
 
             if analysis.modifier_active == MODIFIER_ALT:
                 self._perform_hotkey(pyautogui_module, [KEY_ALT, KEY_TAB])
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
 
             self._set_state(STATE_WRITE)
+            voice_feedback.speak(VOICE_WRITE_MODE)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_CIRCLE:
+            macro_name = self._play_macro_for_context(
+                context_snapshot=context_snapshot,
+                pyautogui_module=pyautogui_module,
+            )
+            if macro_name is not None:
+                self._set_state(STATE_MACRO)
+                self._macro_started_at = time.perf_counter()
+                voice_feedback.speak(f"Macro {macro_name}")
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+
             if self._dispatch_context_action(
                 gesture_name=stabilized_gesture,
                 analysis=analysis,
@@ -479,10 +543,12 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
 
             self._set_state(STATE_MACRO)
             self._macro_started_at = time.perf_counter()
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_THREE_FINGER_LEFT:
@@ -493,8 +559,10 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_hotkey(pyautogui_module, [KEY_ALT, KEY_LEFT_ARROW])
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_THREE_FINGER_RIGHT:
@@ -505,8 +573,10 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_hotkey(pyautogui_module, [KEY_ALT, KEY_RIGHT_ARROW])
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_FOUR_FINGER_SWIPE:
@@ -517,9 +587,11 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_hotkey(pyautogui_module, [KEY_ALT, KEY_TAB])
             self._set_state(STATE_CURSOR)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_PINCH_ZOOM_IN:
@@ -530,8 +602,10 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_zoom(pyautogui_module=pyautogui_module, direction=SCROLL_SPEED)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_PINCH_ZOOM_OUT:
@@ -542,8 +616,10 @@ class KinesysGestureEngineApp:
                 pyautogui_module=pyautogui_module,
             ):
                 self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_zoom(pyautogui_module=pyautogui_module, direction=-SCROLL_SPEED)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
 
     def _refresh_runtime_state(self, analysis: Any) -> None:
         """Apply non-blocking state updates driven by raw gesture continuity."""
@@ -577,6 +653,24 @@ class KinesysGestureEngineApp:
     ) -> None:
         """Run continuous cursor and scroll actions for the current state."""
 
+        if self._state == STATE_WRITE and self._air_writer is not None:
+            index_point = (
+                analysis.action_hand.landmarks_px[INDEX_FINGER_TIP_ID]
+                if analysis.action_hand is not None
+                else None
+            )
+            write_update = self._air_writer.update(
+                index_point=index_point,
+                frame_size=(frame_width, frame_height),
+                allow_stroke_drawing=analysis.action_gesture == GESTURE_PEACE_SIGN,
+            )
+            self._last_write_confidence = write_update.confidence
+            if write_update.character is not None:
+                self._handle_write_update(
+                    write_update=write_update,
+                    pyautogui_module=pyautogui_module,
+                )
+
         if self._state == STATE_LOCK or analysis.action_hand is None:
             return
 
@@ -601,6 +695,76 @@ class KinesysGestureEngineApp:
                     scroll_units=scroll_units,
                     modifier_active=analysis.modifier_active,
                 )
+
+    def _play_macro_for_context(self, context_snapshot: Any, pyautogui_module: Any) -> str | None:
+        """Play the best matching macro for the current app and return its name."""
+
+        if self._macro_engine is None:
+            return None
+
+        try:
+            return self._macro_engine.play_macro_for_context(
+                trigger_gesture=GESTURE_CIRCLE,
+                active_app=context_snapshot.active_app,
+                profile_name=context_snapshot.profile_name,
+                pyautogui_module=pyautogui_module,
+            )
+        except Exception as exc:
+            LOGGER.exception("Macro playback failed: %s", exc)
+            return None
+
+    def _handle_write_update(self, write_update: Any, pyautogui_module: Any) -> None:
+        """Type one recognized or hovered character and update shared write state."""
+
+        typed_token = write_update.character
+        if typed_token is None:
+            return
+
+        try:
+            if typed_token == WRITE_BACKSPACE_TOKEN:
+                pyautogui_module.press("backspace")
+                self._recognized_text = self._recognized_text[:-1]
+                self._remember_character("BACKSPACE")
+                return
+
+            if typed_token == " ":
+                pyautogui_module.press("space")
+            else:
+                pyautogui_module.write(typed_token)
+
+            self._recognized_text += typed_token
+            self._remember_character(typed_token)
+        except Exception as exc:
+            LOGGER.exception("Write-mode typing failed: %s", exc)
+
+    def _remember_character(self, character: str) -> None:
+        """Keep a bounded list of the most recent typed characters."""
+
+        self._last_chars.append(character)
+        self._last_chars = self._last_chars[-RECENT_CHARS_LIMIT:]
+
+    def _record_gesture_event(
+        self,
+        gesture_name: str,
+        analysis: Any,
+        context_snapshot: Any,
+    ) -> None:
+        """Persist one fired gesture event for the analytics pipeline."""
+
+        if self._analytics_tracker is None:
+            return
+
+        try:
+            self._analytics_tracker.record_gesture(
+                gesture_name=gesture_name,
+                app_name=context_snapshot.active_app,
+                profile_name=context_snapshot.profile_name,
+                confidence=analysis.action_confidence,
+                state_name=self._state,
+                modifier_active=analysis.modifier_active,
+            )
+        except Exception as exc:
+            LOGGER.exception("Analytics logging failed: %s", exc)
 
     def _dispatch_context_action(
         self,
@@ -828,6 +992,18 @@ class KinesysGestureEngineApp:
     def _set_state(self, next_state: str) -> None:
         """Transition the runtime state while recording entry time."""
 
+        if self._state == next_state:
+            self._state_entered_at = time.perf_counter()
+            return
+
+        if self._state == STATE_WRITE and next_state != STATE_WRITE and self._air_writer is not None:
+            self._air_writer.stop_session()
+            self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
+
+        if self._state != STATE_WRITE and next_state == STATE_WRITE and self._air_writer is not None:
+            self._air_writer.start_session()
+            self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
+
         self._state = next_state
         self._state_entered_at = time.perf_counter()
 
@@ -853,6 +1029,8 @@ class KinesysGestureEngineApp:
     ) -> None:
         """Render the gesture-engine status overlay."""
 
+        recognized_preview = self._recognized_text[-RECOGNIZED_TEXT_PREVIEW_LENGTH:] or "-"
+        recent_characters = " ".join(self._last_chars) if self._last_chars else "-"
         panel_height = PANEL_PADDING_TOP + PANEL_PADDING_BOTTOM + (HUD_LINE_HEIGHT * HUD_LINE_COUNT)
         panel = frame.copy()
         cv2_module.rectangle(
@@ -945,7 +1123,7 @@ class KinesysGestureEngineApp:
             frame=frame,
             font_face=font_face,
             line_index=9,
-            text=f"FPS: {fps:.1f}",
+            text=f"Text: {recognized_preview}",
             color=HUD_TEXT_COLOR,
         )
         self._put_hud_text(
@@ -953,6 +1131,22 @@ class KinesysGestureEngineApp:
             frame=frame,
             font_face=font_face,
             line_index=10,
+            text=f"Recent: {recent_characters}",
+            color=HUD_TEXT_COLOR,
+        )
+        self._put_hud_text(
+            cv2_module=cv2_module,
+            frame=frame,
+            font_face=font_face,
+            line_index=11,
+            text=f"FPS: {fps:.1f}",
+            color=HUD_TEXT_COLOR,
+        )
+        self._put_hud_text(
+            cv2_module=cv2_module,
+            frame=frame,
+            font_face=font_face,
+            line_index=12,
             text=f"Hold frames: {GESTURE_HOLD_FRAMES}",
             color=HUD_TEXT_COLOR,
         )
@@ -962,7 +1156,7 @@ class KinesysGestureEngineApp:
             cv2_module=cv2_module,
             frame=frame,
             font_face=font_face,
-            line_index=11,
+            line_index=13,
             text=click_text,
             color=CURSOR_INDICATOR_COLOR,
         )
@@ -1027,11 +1221,11 @@ class KinesysGestureEngineApp:
         self._shared_state["gesture_state"] = self._state
         self._shared_state["active_app"] = context_snapshot.voice_label
         self._shared_state["active_profile"] = context_snapshot.profile_name
-        self._shared_state["recognized_text"] = SHARED_STATE_DEFAULT_TEXT
-        self._shared_state["confidence"] = analysis.action_confidence
+        self._shared_state["recognized_text"] = self._recognized_text
+        self._shared_state["confidence"] = max(analysis.action_confidence, self._last_write_confidence)
         self._shared_state["fps"] = fps
         self._shared_state["fatigue_level"] = self._fatigue_level
-        self._shared_state["last_chars"] = []
+        self._shared_state["last_chars"] = list(self._last_chars)
         self._shared_state["modifier_active"] = analysis.modifier_active or MODIFIER_NONE
         self._shared_state["ngrok_url"] = SHARED_STATE_DEFAULT_URL
 
@@ -1050,7 +1244,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Run the COMMIT 4 KINESYS application."""
+    """Run the COMMIT 5 KINESYS application."""
 
     parse_args()
     application = KinesysGestureEngineApp()
