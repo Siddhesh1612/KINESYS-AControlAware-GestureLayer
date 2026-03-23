@@ -1,4 +1,4 @@
-"""Main KINESYS context-aware runtime for COMMIT 3."""
+"""Main KINESYS adaptive runtime for COMMIT 4."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from config import (
     GESTURE_THREE_FINGER_RIGHT,
     GESTURE_TWO_FINGER_SWIPE,
     GESTURE_UNKNOWN,
+    FATIGUE_ALPHA,
     HUD_FONT_SCALE,
     HUD_FONT_THICKNESS,
     HUD_LINE_HEIGHT,
@@ -62,10 +63,10 @@ from config import (
     MODIFIER_CTRL,
     MODIFIER_NONE,
     MODIFIER_SHIFT,
+    SMOOTHING_ALPHA,
     SCROLL_DELTA_DIVISOR,
     SCROLL_MIN_STEP,
     SCROLL_SPEED,
-    SMOOTHING_ALPHA,
     STATE_CURSOR,
     STATE_IDLE,
     STATE_LOCK,
@@ -87,7 +88,7 @@ JPEG_QUALITY_PARAM = "IMWRITE_JPEG_QUALITY"
 PANEL_PADDING_TOP = 12
 PANEL_PADDING_BOTTOM = 18
 PANEL_WIDTH = 520
-HUD_LINE_COUNT = 9
+HUD_LINE_COUNT = 11
 TEXT_SHADOW_OFFSET = 2
 KEY_MASK = 0xFF
 LINE_INDEX_OFFSET = 1
@@ -125,6 +126,7 @@ ACTION_SCREENSHOT = "screenshot"
 ACTION_COMMENT_LINE = "comment_line"
 ACTION_UNCOMMENT_LINE = "uncomment_line"
 
+VOICE_FATIGUE = "Please take a break"
 VOICE_LOCK = "Kinesys locked"
 VOICE_UNLOCK = "Kinesys unlocked"
 VOICE_TERMINATED = "Kinesys off"
@@ -184,7 +186,7 @@ class StabilizedValueTracker:
 
 
 class KinesysGestureEngineApp:
-    """Run the COMMIT 3 gesture engine with context-aware action dispatch."""
+    """Run the COMMIT 4 gesture engine with context-aware adaptive behavior."""
 
     def __init__(self) -> None:
         """Initialize state that is independent from external runtime dependencies."""
@@ -206,6 +208,11 @@ class KinesysGestureEngineApp:
         self._shared_state = None
         self._current_context = None
         self._context_engine = None
+        self._gesture_trainer = None
+        self._fatigue_detector = None
+        self._fatigue_level = SHARED_STATE_DEFAULT_FATIGUE
+        self._fatigue_jitter = SHARED_STATE_DEFAULT_FATIGUE
+        self._active_smoothing_alpha = SMOOTHING_ALPHA
 
     def run(self) -> int:
         """Start the runtime after validating setup and runtime dependencies."""
@@ -224,6 +231,8 @@ class KinesysGestureEngineApp:
         try:
             from context_engine import ContextEngine
             from cursor_controller import CursorController
+            from fatigue_detector import FatigueDetector
+            from gesture_trainer import GestureTrainer
             from hand_tracker import HandTracker
             from voice_feedback import VoiceFeedback
         except Exception as exc:
@@ -234,6 +243,8 @@ class KinesysGestureEngineApp:
         context_engine = None
         tracker = None
         cursor = None
+        fatigue_detector = None
+        gesture_trainer = None
         voice_feedback = None
 
         try:
@@ -245,8 +256,12 @@ class KinesysGestureEngineApp:
 
             context_engine = ContextEngine()
             self._context_engine = context_engine
+            gesture_trainer = GestureTrainer()
+            self._gesture_trainer = gesture_trainer
             tracker = HandTracker()
             cursor = CursorController()
+            fatigue_detector = FatigueDetector()
+            self._fatigue_detector = fatigue_detector
             voice_feedback = VoiceFeedback()
             font_face = getattr(cv2, FONT_FACE)
             jpeg_quality_param = getattr(cv2, JPEG_QUALITY_PARAM)
@@ -259,6 +274,11 @@ class KinesysGestureEngineApp:
 
                 frame = cv2.flip(frame, FRAME_FLIP_CODE)
                 analysis = tracker.process(frame)
+                self._apply_personal_gesture_override(analysis=analysis)
+                fatigue_status = self._update_fatigue_status(
+                    analysis=analysis,
+                    voice_feedback=voice_feedback,
+                )
                 context_snapshot = context_engine.get_context()
                 self._current_context = context_snapshot
                 self._handle_app_switch(context_snapshot=context_snapshot, voice_feedback=voice_feedback)
@@ -296,6 +316,7 @@ class KinesysGestureEngineApp:
                     font_face=font_face,
                     analysis=analysis,
                     context_snapshot=context_snapshot,
+                    fatigue_status=fatigue_status,
                     fps=fps,
                 )
                 self._update_shared_state(
@@ -303,6 +324,7 @@ class KinesysGestureEngineApp:
                     frame=annotated_frame,
                     analysis=analysis,
                     context_snapshot=context_snapshot,
+                    fatigue_status=fatigue_status,
                     fps=fps,
                     jpeg_quality_param=jpeg_quality_param,
                 )
@@ -326,6 +348,8 @@ class KinesysGestureEngineApp:
             if voice_feedback is not None:
                 voice_feedback.shutdown()
             self._context_engine = None
+            self._gesture_trainer = None
+            self._fatigue_detector = None
             if self._shared_state_manager is not None:
                 self._shared_state_manager.shutdown()
 
@@ -334,6 +358,49 @@ class KinesysGestureEngineApp:
 
         stabilized_value = self._termination_hold_tracker.update(analysis.termination_detected)
         return bool(stabilized_value is TERMINATION_READY_VALUE)
+
+    def _apply_personal_gesture_override(self, analysis: Any) -> None:
+        """Override the default action gesture when the personal KNN model is confident."""
+
+        if self._gesture_trainer is None or analysis.action_hand is None:
+            return
+
+        try:
+            prediction = self._gesture_trainer.predict_gesture(
+                analysis.action_hand.landmarks_norm,
+                minimum_confidence=ACTION_CONFIDENCE_THRESHOLD,
+            )
+        except Exception as exc:
+            LOGGER.exception("Personal gesture override failed: %s", exc)
+            return
+
+        if prediction.gesture_name is None:
+            return
+
+        analysis.action_hand.gesture = prediction.gesture_name
+        analysis.action_hand.confidence = prediction.confidence
+        analysis.action_gesture = prediction.gesture_name
+        analysis.action_confidence = prediction.confidence
+
+    def _update_fatigue_status(self, analysis: Any, voice_feedback: Any) -> Any:
+        """Update fatigue state from the active hand and trigger one-shot alerts."""
+
+        if self._fatigue_detector is None:
+            self._fatigue_level = SHARED_STATE_DEFAULT_FATIGUE
+            self._fatigue_jitter = SHARED_STATE_DEFAULT_FATIGUE
+            self._active_smoothing_alpha = SMOOTHING_ALPHA
+            return None
+
+        landmarks_norm = analysis.action_hand.landmarks_norm if analysis.action_hand is not None else None
+        fatigue_status = self._fatigue_detector.update(landmarks_norm)
+        self._fatigue_level = fatigue_status.fatigue_level
+        self._fatigue_jitter = fatigue_status.jitter
+        self._active_smoothing_alpha = fatigue_status.smoothing_alpha
+
+        if fatigue_status.should_alert:
+            voice_feedback.speak(VOICE_FATIGUE)
+
+        return fatigue_status
 
     @staticmethod
     def _handle_app_switch(context_snapshot: Any, voice_feedback: Any) -> None:
@@ -522,7 +589,7 @@ class KinesysGestureEngineApp:
             cursor.move_cursor(
                 landmark_point=analysis.action_hand.landmarks_px[INDEX_FINGER_TIP_ID],
                 frame_size=(frame_width, frame_height),
-                smoothing_alpha=SMOOTHING_ALPHA,
+                smoothing_alpha=self._active_smoothing_alpha,
             )
             return
 
@@ -781,6 +848,7 @@ class KinesysGestureEngineApp:
         font_face: int,
         analysis: Any,
         context_snapshot: Any,
+        fatigue_status: Any,
         fps: float,
     ) -> None:
         """Render the gesture-engine status overlay."""
@@ -861,6 +929,22 @@ class KinesysGestureEngineApp:
             frame=frame,
             font_face=font_face,
             line_index=7,
+            text=f"Fatigue: {self._fatigue_level:.2f}",
+            color=HUD_WARNING_COLOR if self._fatigue_level > 0.0 else HUD_TEXT_COLOR,
+        )
+        self._put_hud_text(
+            cv2_module=cv2_module,
+            frame=frame,
+            font_face=font_face,
+            line_index=8,
+            text=f"Smoothing: {self._active_smoothing_alpha:.2f}",
+            color=HUD_WARNING_COLOR if self._active_smoothing_alpha == FATIGUE_ALPHA else HUD_TEXT_COLOR,
+        )
+        self._put_hud_text(
+            cv2_module=cv2_module,
+            frame=frame,
+            font_face=font_face,
+            line_index=9,
             text=f"FPS: {fps:.1f}",
             color=HUD_TEXT_COLOR,
         )
@@ -868,7 +952,7 @@ class KinesysGestureEngineApp:
             cv2_module=cv2_module,
             frame=frame,
             font_face=font_face,
-            line_index=8,
+            line_index=10,
             text=f"Hold frames: {GESTURE_HOLD_FRAMES}",
             color=HUD_TEXT_COLOR,
         )
@@ -878,7 +962,7 @@ class KinesysGestureEngineApp:
             cv2_module=cv2_module,
             frame=frame,
             font_face=font_face,
-            line_index=9,
+            line_index=11,
             text=click_text,
             color=CURSOR_INDICATOR_COLOR,
         )
@@ -923,6 +1007,7 @@ class KinesysGestureEngineApp:
         frame: Any,
         analysis: Any,
         context_snapshot: Any,
+        fatigue_status: Any,
         fps: float,
         jpeg_quality_param: int,
     ) -> None:
@@ -945,7 +1030,7 @@ class KinesysGestureEngineApp:
         self._shared_state["recognized_text"] = SHARED_STATE_DEFAULT_TEXT
         self._shared_state["confidence"] = analysis.action_confidence
         self._shared_state["fps"] = fps
-        self._shared_state["fatigue_level"] = SHARED_STATE_DEFAULT_FATIGUE
+        self._shared_state["fatigue_level"] = self._fatigue_level
         self._shared_state["last_chars"] = []
         self._shared_state["modifier_active"] = analysis.modifier_active or MODIFIER_NONE
         self._shared_state["ngrok_url"] = SHARED_STATE_DEFAULT_URL
@@ -965,7 +1050,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Run the COMMIT 3 KINESYS application."""
+    """Run the COMMIT 4 KINESYS application."""
 
     parse_args()
     application = KinesysGestureEngineApp()
