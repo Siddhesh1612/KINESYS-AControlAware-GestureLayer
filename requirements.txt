@@ -1,5 +1,5 @@
 # Core computer vision and input control
-mediapipe>=0.10.14,<0.11
+mediapipe==0.10.14
 opencv-python>=4.10.0,<5
 numpy>=1.26.4,<2
 scipy>=1.14.1,<2

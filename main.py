@@ -25,6 +25,7 @@ from config import (
     DASHBOARD_HOST,
     DASHBOARD_PORT,
     DASHBOARD_REFRESH_MS,
+    DASHBOARD_SNAPSHOT_INTERVAL_SECONDS,
     DASHBOARD_SCRIPT,
     DASHBOARD_STATE_AUTHKEY,
     DASHBOARD_STATE_ENV_AUTHKEY,
@@ -265,6 +266,7 @@ class KinesysGestureEngineApp:
         self._dashboard_state_thread = None
         self._ngrok_tunnel = None
         self._ngrok_url = SHARED_STATE_DEFAULT_URL
+        self._last_dashboard_snapshot_time = 0.0
         self._last_handled_record_request = 0
         self._last_handled_train_request = 0
         self._last_handled_delete_request = 0
@@ -606,15 +608,9 @@ class KinesysGestureEngineApp:
             self._dashboard_process = None
 
         if self._dashboard_state_server is not None:
-            try:
-                self._dashboard_state_server.stop_event.set()
-            except Exception as exc:
-                LOGGER.exception("Failed to stop dashboard shared-state server: %s", exc)
             self._dashboard_state_server = None
 
-        if self._dashboard_state_thread is not None:
-            self._dashboard_state_thread.join(timeout=1.0)
-            self._dashboard_state_thread = None
+        self._dashboard_state_thread = None
 
         SHARED_STATE_PROXY = None
 
@@ -624,9 +620,17 @@ class KinesysGestureEngineApp:
         if self._shared_state is None:
             return
 
+        now = time.perf_counter()
+        if now - self._last_dashboard_snapshot_time < DASHBOARD_SNAPSHOT_INTERVAL_SECONDS:
+            return
+
+        snapshot_path = DASHBOARD_STATE_SNAPSHOT
+        snapshot_tmp_path = f"{snapshot_path}.tmp"
         try:
-            with open(DASHBOARD_STATE_SNAPSHOT, "w", encoding="utf-8") as snapshot_file:
+            with open(snapshot_tmp_path, "w", encoding="utf-8") as snapshot_file:
                 json.dump(dict(self._shared_state), snapshot_file, indent=2)
+            os.replace(snapshot_tmp_path, snapshot_path)
+            self._last_dashboard_snapshot_time = now
         except Exception as exc:
             LOGGER.exception("Failed to write dashboard snapshot: %s", exc)
 
@@ -673,6 +677,16 @@ class KinesysGestureEngineApp:
             return
 
         if analysis.action_hand is None:
+            self._shared_state["trainer_status"] = "Show the selected gesture in frame."
+            return
+
+        if (
+            analysis.action_gesture not in {target_gesture, GESTURE_UNKNOWN}
+            and analysis.action_confidence >= ACTION_CONFIDENCE_THRESHOLD
+        ):
+            self._shared_state["trainer_status"] = (
+                f"Detected {analysis.action_gesture}. Show {target_gesture} to record samples."
+            )
             return
 
         now = time.perf_counter()

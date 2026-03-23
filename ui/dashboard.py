@@ -77,7 +77,6 @@ ANALYTICS_HELP = "Session analytics loaded from analytics.json."
 MACRO_HELP = "Save, delete, or test gesture-triggered macro definitions."
 
 
-@st.cache_resource(show_spinner=False)
 def connect_shared_state() -> Any | None:
     """Connect to the shared-state bridge started by the KINESYS runtime."""
 

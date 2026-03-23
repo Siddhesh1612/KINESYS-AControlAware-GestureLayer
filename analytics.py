@@ -91,7 +91,7 @@ class AnalyticsTracker:
             most_common_gesture = Counter(event.gesture_name for event in self._events).most_common(1)[0][0]
 
         return {
-            "session_duration_seconds": time.perf_counter() - self._session_started_at,
+            "session_duration_seconds": self._calculate_session_duration_seconds(),
             "total_gestures": total_events,
             "most_used_gesture": most_common_gesture,
             "average_confidence": (
@@ -136,3 +136,16 @@ class AnalyticsTracker:
         except Exception as exc:
             LOGGER.exception("Failed to save analytics log: %s", exc)
 
+    def _calculate_session_duration_seconds(self) -> float:
+        """Estimate duration from the persisted event timeline when possible."""
+
+        if len(self._events) < 2:
+            return 0.0
+
+        try:
+            first_timestamp = datetime.fromisoformat(self._events[0].timestamp_utc)
+            last_timestamp = datetime.fromisoformat(self._events[-1].timestamp_utc)
+        except Exception:
+            return time.perf_counter() - self._session_started_at
+
+        return max((last_timestamp - first_timestamp).total_seconds(), 0.0)

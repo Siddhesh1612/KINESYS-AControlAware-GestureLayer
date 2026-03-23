@@ -25,5 +25,5 @@ analytics.json
 macros.json
 models/emnist_cnn.h5
 models/personal_gestures.pkl
+ui/dashboard_state.json
 demo_assets/
-
