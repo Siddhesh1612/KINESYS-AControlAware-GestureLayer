@@ -1,11 +1,17 @@
-"""Main KINESYS adaptive runtime for COMMIT 5."""
+"""Main KINESYS adaptive runtime for COMMIT 6."""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import json
 import logging
+import os
 from multiprocessing import Manager
+from multiprocessing.managers import BaseManager
+import subprocess
+import sys
+import threading
 import time
 from typing import Any
 
@@ -15,6 +21,18 @@ from config import (
     ACTION_RESET_GRACE_SECONDS,
     CLICK_DEBOUNCE_MS,
     CURSOR_INDICATOR_COLOR,
+    DASHBOARD_HEADLESS,
+    DASHBOARD_HOST,
+    DASHBOARD_PORT,
+    DASHBOARD_REFRESH_MS,
+    DASHBOARD_SCRIPT,
+    DASHBOARD_STATE_AUTHKEY,
+    DASHBOARD_STATE_ENV_AUTHKEY,
+    DASHBOARD_STATE_ENV_HOST,
+    DASHBOARD_STATE_ENV_PORT,
+    DASHBOARD_STATE_HOST,
+    DASHBOARD_STATE_PORT,
+    DASHBOARD_STATE_SNAPSHOT,
     EXIT_KEY,
     FRAME_ENCODE_EXTENSION,
     FRAME_FLIP_CODE,
@@ -56,6 +74,7 @@ from config import (
     KEY_RIGHT_ARROW,
     KEY_SHIFT,
     KEY_TAB,
+    KNN_SAMPLES_REQUIRED,
     LOG_FORMAT,
     LOG_LEVEL,
     MACRO_STATE_DURATION_SECONDS,
@@ -64,6 +83,7 @@ from config import (
     MODIFIER_CTRL,
     MODIFIER_NONE,
     MODIFIER_SHIFT,
+    NGROK_AUTH_TOKEN_ENV,
     RECENT_CHARS_LIMIT,
     RECOGNIZED_TEXT_PREVIEW_LENGTH,
     SMOOTHING_ALPHA,
@@ -78,6 +98,7 @@ from config import (
     STATE_TERMINATED,
     STATE_WRITE,
     TERMINATION_HOLD_FRAMES,
+    TRAINER_RECORD_INTERVAL_SECONDS,
     WEBCAM_FOURCC,
     WEBCAM_HEIGHT,
     WEBCAM_WIDTH,
@@ -85,6 +106,21 @@ from config import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+SHARED_STATE_PROXY: Any = None
+
+
+def get_shared_state_proxy() -> Any:
+    """Return the shared dashboard state proxy exposed to the Streamlit process."""
+
+    return SHARED_STATE_PROXY
+
+
+class DashboardStateBridge(BaseManager):
+    """Expose the shared dashboard state to the Streamlit subprocess."""
+
+
+DashboardStateBridge.register("get_shared_state", callable=get_shared_state_proxy)
 
 FONT_FACE = "FONT_HERSHEY_SIMPLEX"
 JPEG_QUALITY_PARAM = "IMWRITE_JPEG_QUALITY"
@@ -191,7 +227,7 @@ class StabilizedValueTracker:
 
 
 class KinesysGestureEngineApp:
-    """Run the COMMIT 5 gesture engine with macros, analytics, and write mode."""
+    """Run the COMMIT 6 gesture engine with dashboard and shared-state services."""
 
     def __init__(self) -> None:
         """Initialize state that is independent from external runtime dependencies."""
@@ -224,6 +260,15 @@ class KinesysGestureEngineApp:
         self._recognized_text = SHARED_STATE_DEFAULT_TEXT
         self._last_chars: list[str] = []
         self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
+        self._dashboard_process = None
+        self._dashboard_state_server = None
+        self._dashboard_state_thread = None
+        self._ngrok_tunnel = None
+        self._ngrok_url = SHARED_STATE_DEFAULT_URL
+        self._last_handled_record_request = 0
+        self._last_handled_train_request = 0
+        self._last_handled_delete_request = 0
+        self._last_trainer_sample_time = 0.0
 
     def run(self) -> int:
         """Start the runtime after validating setup and runtime dependencies."""
@@ -266,6 +311,9 @@ class KinesysGestureEngineApp:
 
         try:
             self._initialize_shared_state()
+            self._start_dashboard_state_server()
+            self._launch_dashboard_subprocess()
+            self._start_ngrok_tunnel()
             capture = self._open_capture(cv2)
             if not capture.isOpened():
                 LOGGER.error("Unable to open the default webcam.")
@@ -305,6 +353,7 @@ class KinesysGestureEngineApp:
                 context_snapshot = context_engine.get_context()
                 self._current_context = context_snapshot
                 self._handle_app_switch(context_snapshot=context_snapshot, voice_feedback=voice_feedback)
+                self._process_dashboard_commands(analysis=analysis, voice_feedback=voice_feedback)
 
                 if self._handle_termination(analysis=analysis, context_snapshot=context_snapshot):
                     voice_feedback.speak(VOICE_TERMINATED)
@@ -372,6 +421,7 @@ class KinesysGestureEngineApp:
                 air_writer.shutdown()
             if voice_feedback is not None:
                 voice_feedback.shutdown()
+            self._stop_background_services()
             self._air_writer = None
             self._analytics_tracker = None
             self._context_engine = None
@@ -436,6 +486,258 @@ class KinesysGestureEngineApp:
             voice_feedback.speak(VOICE_FATIGUE)
 
         return fatigue_status
+
+    def _start_dashboard_state_server(self) -> None:
+        """Expose the multiprocessing shared state to the Streamlit subprocess."""
+
+        if self._shared_state is None:
+            return
+
+        global SHARED_STATE_PROXY
+        SHARED_STATE_PROXY = self._shared_state
+
+        try:
+            bridge = DashboardStateBridge(
+                address=(DASHBOARD_STATE_HOST, DASHBOARD_STATE_PORT),
+                authkey=DASHBOARD_STATE_AUTHKEY.encode("utf-8"),
+            )
+            self._dashboard_state_server = bridge.get_server()
+            self._dashboard_state_thread = threading.Thread(
+                target=self._dashboard_state_server.serve_forever,
+                name="KinesysDashboardStateServer",
+                daemon=True,
+            )
+            self._dashboard_state_thread.start()
+        except Exception as exc:
+            LOGGER.exception("Failed to start dashboard shared-state server: %s", exc)
+            self._dashboard_state_server = None
+            self._dashboard_state_thread = None
+
+    def _launch_dashboard_subprocess(self) -> None:
+        """Launch the Streamlit dashboard as a non-blocking subprocess."""
+
+        if not os.path.exists(DASHBOARD_SCRIPT):
+            LOGGER.warning("Dashboard script not found at %s", DASHBOARD_SCRIPT)
+            return
+
+        dashboard_environment = os.environ.copy()
+        dashboard_environment[DASHBOARD_STATE_ENV_HOST] = DASHBOARD_STATE_HOST
+        dashboard_environment[DASHBOARD_STATE_ENV_PORT] = str(DASHBOARD_STATE_PORT)
+        dashboard_environment[DASHBOARD_STATE_ENV_AUTHKEY] = DASHBOARD_STATE_AUTHKEY
+
+        command = [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            DASHBOARD_SCRIPT,
+            "--server.headless",
+            DASHBOARD_HEADLESS,
+            "--server.address",
+            DASHBOARD_HOST,
+            "--server.port",
+            str(DASHBOARD_PORT),
+        ]
+
+        try:
+            self._dashboard_process = subprocess.Popen(
+                command,
+                cwd=os.path.dirname(DASHBOARD_SCRIPT) or None,
+                env=dashboard_environment,
+            )
+        except Exception as exc:
+            LOGGER.exception("Failed to launch Streamlit dashboard: %s", exc)
+            self._dashboard_process = None
+
+    def _start_ngrok_tunnel(self) -> None:
+        """Start an ngrok tunnel for the dashboard if a token is configured."""
+
+        if self._shared_state is None:
+            return
+
+        try:
+            from dotenv import load_dotenv
+            from pyngrok import ngrok
+        except Exception as exc:
+            LOGGER.exception("Unable to import ngrok runtime dependencies: %s", exc)
+            return
+
+        try:
+            load_dotenv()
+            auth_token = os.getenv(NGROK_AUTH_TOKEN_ENV, "").strip()
+            if not auth_token:
+                LOGGER.info("No ngrok token configured; dashboard will remain local-only.")
+                return
+
+            ngrok.set_auth_token(auth_token)
+            self._ngrok_tunnel = ngrok.connect(addr=DASHBOARD_PORT, bind_tls=True)
+            self._ngrok_url = self._ngrok_tunnel.public_url
+            self._shared_state["ngrok_url"] = self._ngrok_url
+            LOGGER.info("Dashboard ngrok URL: %s", self._ngrok_url)
+            print(f"KINESYS dashboard URL: {self._ngrok_url}")
+        except Exception as exc:
+            LOGGER.exception("Failed to start ngrok tunnel: %s", exc)
+
+    def _stop_background_services(self) -> None:
+        """Stop the dashboard subprocess, ngrok tunnel, and shared-state bridge."""
+
+        global SHARED_STATE_PROXY
+
+        if self._ngrok_tunnel is not None:
+            try:
+                from pyngrok import ngrok
+
+                ngrok.disconnect(self._ngrok_tunnel.public_url)
+            except Exception as exc:
+                LOGGER.exception("Failed to stop ngrok tunnel: %s", exc)
+            self._ngrok_tunnel = None
+            self._ngrok_url = SHARED_STATE_DEFAULT_URL
+
+        if self._dashboard_process is not None:
+            try:
+                if self._dashboard_process.poll() is None:
+                    self._dashboard_process.terminate()
+                    self._dashboard_process.wait(timeout=5.0)
+            except Exception:
+                try:
+                    self._dashboard_process.kill()
+                except Exception as exc:
+                    LOGGER.exception("Failed to kill dashboard subprocess: %s", exc)
+            self._dashboard_process = None
+
+        if self._dashboard_state_server is not None:
+            try:
+                self._dashboard_state_server.stop_event.set()
+            except Exception as exc:
+                LOGGER.exception("Failed to stop dashboard shared-state server: %s", exc)
+            self._dashboard_state_server = None
+
+        if self._dashboard_state_thread is not None:
+            self._dashboard_state_thread.join(timeout=1.0)
+            self._dashboard_state_thread = None
+
+        SHARED_STATE_PROXY = None
+
+    def _write_dashboard_snapshot(self) -> None:
+        """Persist a JSON snapshot so the dashboard can fall back to file polling."""
+
+        if self._shared_state is None:
+            return
+
+        try:
+            with open(DASHBOARD_STATE_SNAPSHOT, "w", encoding="utf-8") as snapshot_file:
+                json.dump(dict(self._shared_state), snapshot_file, indent=2)
+        except Exception as exc:
+            LOGGER.exception("Failed to write dashboard snapshot: %s", exc)
+
+    def _process_dashboard_commands(self, analysis: Any, voice_feedback: Any) -> None:
+        """Handle dashboard-triggered trainer commands from the shared state."""
+
+        if self._shared_state is None or self._gesture_trainer is None:
+            return
+
+        self._shared_state["trainer_progress"] = self._gesture_trainer.get_training_progress()
+        self._shared_state["trained_gestures"] = self._gesture_trainer.list_trained_gestures()
+        self._shared_state["two_hand_mode"] = analysis.modifier_hand is not None
+
+        record_request_id = int(self._shared_state.get("trainer_record_request_id", 0))
+        if record_request_id != self._last_handled_record_request:
+            self._last_handled_record_request = record_request_id
+            self._shared_state["trainer_recording_active"] = True
+            self._shared_state["trainer_status"] = "Show the selected gesture to the camera."
+            self._last_trainer_sample_time = 0.0
+
+        if bool(self._shared_state.get("trainer_recording_active", False)):
+            self._capture_trainer_sample(analysis=analysis)
+
+        train_request_id = int(self._shared_state.get("trainer_train_request_id", 0))
+        if train_request_id != self._last_handled_train_request:
+            self._last_handled_train_request = train_request_id
+            self._handle_train_request(voice_feedback=voice_feedback)
+
+        delete_request_id = int(self._shared_state.get("trainer_delete_request_id", 0))
+        if delete_request_id != self._last_handled_delete_request:
+            self._last_handled_delete_request = delete_request_id
+            self._handle_delete_request()
+
+    def _capture_trainer_sample(self, analysis: Any) -> None:
+        """Capture one timed trainer sample from the current action hand."""
+
+        if self._shared_state is None or self._gesture_trainer is None:
+            return
+
+        target_gesture = str(self._shared_state.get("trainer_target_gesture", "")).strip()
+        if not target_gesture:
+            self._shared_state["trainer_recording_active"] = False
+            self._shared_state["trainer_status"] = "Select a gesture before recording."
+            return
+
+        if analysis.action_hand is None:
+            return
+
+        now = time.perf_counter()
+        if now - self._last_trainer_sample_time < TRAINER_RECORD_INTERVAL_SECONDS:
+            return
+
+        try:
+            sample_count = self._gesture_trainer.record_sample(
+                gesture_name=target_gesture,
+                landmarks_norm=analysis.action_hand.landmarks_norm,
+            )
+        except Exception as exc:
+            LOGGER.exception("Failed to record trainer sample: %s", exc)
+            self._shared_state["trainer_recording_active"] = False
+            self._shared_state["trainer_status"] = f"Recording failed: {exc}"
+            return
+
+        self._last_trainer_sample_time = now
+        self._shared_state["trainer_progress"] = self._gesture_trainer.get_training_progress()
+        self._shared_state["trainer_status"] = f"Collected {sample_count}/{KNN_SAMPLES_REQUIRED} samples."
+
+        if sample_count >= KNN_SAMPLES_REQUIRED:
+            self._shared_state["trainer_recording_active"] = False
+            self._shared_state["trainer_status"] = "Samples collected. Press Train."
+
+    def _handle_train_request(self, voice_feedback: Any) -> None:
+        """Train the selected gesture from the samples already collected."""
+
+        if self._shared_state is None or self._gesture_trainer is None:
+            return
+
+        target_gesture = str(self._shared_state.get("trainer_target_gesture", "")).strip()
+        if not target_gesture:
+            self._shared_state["trainer_status"] = "Select a gesture before training."
+            return
+
+        trained_ok = self._gesture_trainer.train_gesture(target_gesture)
+        self._shared_state["trainer_progress"] = self._gesture_trainer.get_training_progress()
+        self._shared_state["trained_gestures"] = self._gesture_trainer.list_trained_gestures()
+        if trained_ok:
+            self._shared_state["trainer_status"] = f"Trained {target_gesture}."
+            voice_feedback.speak("Custom gesture trained")
+            return
+
+        self._shared_state["trainer_status"] = "Need at least 5 samples before training."
+
+    def _handle_delete_request(self) -> None:
+        """Delete one selected trained gesture from the persisted trainer state."""
+
+        if self._shared_state is None or self._gesture_trainer is None:
+            return
+
+        target_gesture = str(self._shared_state.get("trainer_delete_gesture", "")).strip()
+        if not target_gesture:
+            self._shared_state["trainer_status"] = "Select a trained gesture to delete."
+            return
+
+        deleted_ok = self._gesture_trainer.delete_gesture(target_gesture)
+        self._shared_state["trainer_progress"] = self._gesture_trainer.get_training_progress()
+        self._shared_state["trained_gestures"] = self._gesture_trainer.list_trained_gestures()
+        if deleted_ok:
+            self._shared_state["trainer_status"] = f"Deleted {target_gesture}."
+            return
+
+        self._shared_state["trainer_status"] = f"No trained gesture named {target_gesture}."
 
     @staticmethod
     def _handle_app_switch(context_snapshot: Any, voice_feedback: Any) -> None:
@@ -986,8 +1288,19 @@ class KinesysGestureEngineApp:
                 "last_chars": [],
                 "modifier_active": SHARED_STATE_DEFAULT_MODIFIER,
                 "ngrok_url": SHARED_STATE_DEFAULT_URL,
+                "two_hand_mode": False,
+                "trainer_target_gesture": SHARED_STATE_DEFAULT_TEXT,
+                "trainer_record_request_id": 0,
+                "trainer_train_request_id": 0,
+                "trainer_delete_request_id": 0,
+                "trainer_delete_gesture": SHARED_STATE_DEFAULT_TEXT,
+                "trainer_recording_active": False,
+                "trainer_status": "Idle",
+                "trainer_progress": {},
+                "trained_gestures": [],
             }
         )
+        self._write_dashboard_snapshot()
 
     def _set_state(self, next_state: str) -> None:
         """Transition the runtime state while recording entry time."""
@@ -1227,7 +1540,9 @@ class KinesysGestureEngineApp:
         self._shared_state["fatigue_level"] = self._fatigue_level
         self._shared_state["last_chars"] = list(self._last_chars)
         self._shared_state["modifier_active"] = analysis.modifier_active or MODIFIER_NONE
-        self._shared_state["ngrok_url"] = SHARED_STATE_DEFAULT_URL
+        self._shared_state["ngrok_url"] = self._ngrok_url
+        self._shared_state["two_hand_mode"] = analysis.modifier_hand is not None
+        self._write_dashboard_snapshot()
 
 
 def configure_logging() -> None:
@@ -1244,7 +1559,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Run the COMMIT 5 KINESYS application."""
+    """Run the COMMIT 6 KINESYS application."""
 
     parse_args()
     application = KinesysGestureEngineApp()

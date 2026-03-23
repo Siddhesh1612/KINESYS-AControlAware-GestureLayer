@@ -14,7 +14,7 @@ psutil>=6.1.1,<7
 # ML and training
 scikit-learn>=1.5.2,<1.6
 tensorflow==2.13.1; python_version < "3.12"
-tensorflow>=2.18,<2.19; python_version >= "3.12"
+tensorflow>=2.16,<2.17; python_version >= "3.12"
 tensorflow-datasets>=4.9.7,<5
 
 # UI, tunnel, and runtime support
