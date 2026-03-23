@@ -1,0 +1,8 @@
+{
+  "peace_sign": "run_code",
+  "three_finger_left": "comment_line",
+  "three_finger_right": "uncomment_line",
+  "circle": "save_file",
+  "swipe_up": "scroll_up_editor",
+  "four_finger_swipe": "switch_editor_tab"
+}

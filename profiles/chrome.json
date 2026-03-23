@@ -1,0 +1,9 @@
+{
+  "peace_sign": "new_tab",
+  "three_finger_left": "browser_back",
+  "three_finger_right": "browser_forward",
+  "pinch_zoom_in": "zoom_in",
+  "pinch_zoom_out": "zoom_out",
+  "circle": "bookmark_page",
+  "four_finger_swipe": "switch_tab"
+}
