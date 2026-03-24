@@ -1,5 +1,4 @@
-"""Fatigue-aware gesture smoothing based on hand landmark jitter."""
-
+"""Motion-based fatigue detection via fingertip jitter analysis."""
 from __future__ import annotations
 
 from collections import deque
@@ -9,23 +8,13 @@ import time
 import numpy as np
 
 from config import (
-    FATIGUE_ALPHA,
-    FATIGUE_ALERT_COOLDOWN_SECONDS,
-    FATIGUE_DURATION_SECONDS,
-    FATIGUE_THRESHOLD,
-    FATIGUE_WINDOW_FRAMES,
-    FATIGUE_SCORE_SCALE,
-    SMOOTHING_ALPHA,
+    FATIGUE_ALERT_COOLDOWN_SECONDS, FATIGUE_ALPHA, FATIGUE_DURATION_SECONDS,
+    FATIGUE_SCORE_SCALE, FATIGUE_THRESHOLD, FATIGUE_WINDOW_FRAMES, SMOOTHING_ALPHA,
 )
-
-
-EMPTY_JITTER = 0.0
 
 
 @dataclass(slots=True)
 class FatigueStatus:
-    """Current fatigue state for the active hand."""
-
     jitter: float
     fatigue_level: float
     fatigued: bool
@@ -34,72 +23,48 @@ class FatigueStatus:
 
 
 class FatigueDetector:
-    """Track fingertip jitter and raise adaptive smoothing when fatigue is sustained."""
+    """Raise adaptive smoothing when sustained hand jitter indicates fatigue."""
 
     def __init__(self) -> None:
-        """Initialize rolling jitter history and fatigue timers."""
-
-        self._index_tip_history: deque[tuple[float, float, float]] = deque(maxlen=FATIGUE_WINDOW_FRAMES)
-        self._high_jitter_started_at: float | None = None
+        self._history: deque[tuple[float, float, float]] = deque(maxlen=FATIGUE_WINDOW_FRAMES)
+        self._high_jitter_start: float | None = None
         self._fatigued = False
-        self._last_alert_time = 0.0
+        self._last_alert = 0.0
 
-    def update(self, landmarks_norm: list[tuple[float, float, float]] | None) -> FatigueStatus:
-        """Update the detector from one frame of normalized hand landmarks."""
-
+    def update(self, landmarks_norm: list | None) -> FatigueStatus:
         if not landmarks_norm:
-            self._index_tip_history.clear()
-            self._high_jitter_started_at = None
+            self._history.clear()
+            self._high_jitter_start = None
             self._fatigued = False
-            return FatigueStatus(
-                jitter=EMPTY_JITTER,
-                fatigue_level=EMPTY_JITTER,
-                fatigued=False,
-                smoothing_alpha=SMOOTHING_ALPHA,
-                should_alert=False,
-            )
+            return FatigueStatus(0.0, 0.0, False, SMOOTHING_ALPHA, False)
 
-        index_tip = landmarks_norm[8]
-        self._index_tip_history.append(index_tip)
-        jitter = self._calculate_jitter()
-        fatigue_level = self._normalize_fatigue_level(jitter)
+        self._history.append(landmarks_norm[8])  # index tip
+        jitter = self._jitter()
+        fatigue_level = min(1.0, max(0.0, jitter * FATIGUE_SCORE_SCALE))
         now = time.perf_counter()
 
         if jitter >= FATIGUE_THRESHOLD:
-            if self._high_jitter_started_at is None:
-                self._high_jitter_started_at = now
-            sustained_for = now - self._high_jitter_started_at
-            is_fatigued = sustained_for >= FATIGUE_DURATION_SECONDS
+            if self._high_jitter_start is None:
+                self._high_jitter_start = now
+            is_fatigued = (now - self._high_jitter_start) >= FATIGUE_DURATION_SECONDS
         else:
-            self._high_jitter_started_at = None
+            self._high_jitter_start = None
             is_fatigued = False
 
-        should_alert = False
-        if is_fatigued and not self._fatigued and (now - self._last_alert_time) >= FATIGUE_ALERT_COOLDOWN_SECONDS:
-            should_alert = True
-            self._last_alert_time = now
-
+        should_alert = (is_fatigued and not self._fatigued
+                        and (now - self._last_alert) >= FATIGUE_ALERT_COOLDOWN_SECONDS)
+        if should_alert:
+            self._last_alert = now
         self._fatigued = is_fatigued
+
         return FatigueStatus(
-            jitter=jitter,
-            fatigue_level=fatigue_level,
-            fatigued=is_fatigued,
+            jitter=jitter, fatigue_level=fatigue_level, fatigued=is_fatigued,
             smoothing_alpha=FATIGUE_ALPHA if is_fatigued else SMOOTHING_ALPHA,
             should_alert=should_alert,
         )
 
-    def _calculate_jitter(self) -> float:
-        """Return the aggregate positional variance over the rolling window."""
-
-        if len(self._index_tip_history) < FATIGUE_WINDOW_FRAMES:
-            return EMPTY_JITTER
-
-        points = np.asarray(self._index_tip_history, dtype=np.float32)
-        variance_vector = np.var(points, axis=0)
-        return float(np.linalg.norm(variance_vector))
-
-    @staticmethod
-    def _normalize_fatigue_level(jitter: float) -> float:
-        """Map raw jitter to a stable 0-1 fatigue indicator for UI display."""
-
-        return min(1.0, max(0.0, jitter * FATIGUE_SCORE_SCALE))
+    def _jitter(self) -> float:
+        if len(self._history) < FATIGUE_WINDOW_FRAMES:
+            return 0.0
+        pts = np.asarray(self._history, dtype=np.float32)
+        return float(np.linalg.norm(np.var(pts, axis=0)))

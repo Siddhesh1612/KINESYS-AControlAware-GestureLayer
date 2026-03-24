@@ -1,325 +1,213 @@
-"""Central configuration for the KINESYS project."""
-
+"""Unified configuration for KINESYS v4."""
 from pathlib import Path
-
 
 BASE_DIR = Path(__file__).resolve().parent
 
-APP_NAME = "KINESYS"
-APP_VERSION = "0.1.0"
-MAIN_WINDOW_NAME = "KINESYS Foundation"
-
+# ── App ───────────────────────────────────────────────────────────────────────
+APP_NAME = "KINESYS v4"
+MAIN_WINDOW_NAME = "KINESYS v4"
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
-SMOOTHING_ALPHA = 0.55          # raised for snappier cursor response
-FATIGUE_ALPHA = 0.7
-CLICK_DEBOUNCE_MS = 400         # slightly faster click debounce
-SCROLL_SPEED = 5                # stronger scroll per step
-CURSOR_HISTORY_LENGTH = 4       # shorter history = less lag
-CURSOR_DEADZONE_PIXELS = 5.0    # smaller deadzone = more responsive
-CURSOR_FAST_MOVEMENT_PIXELS = 100.0   # reach max alpha sooner
-CURSOR_SLOW_MOVEMENT_PIXELS = 12.0    # tighter slow zone
-CURSOR_ALPHA_MIN = 0.28         # higher min = less sluggish at slow speeds
-CURSOR_ALPHA_MAX = 0.88         # higher max = snappier at fast speeds
-CURSOR_MAX_STEP_PIXELS = 260.0  # allow larger jumps for fast sweeps
-CURSOR_PREDICTION_FACTOR = 0.18 # stronger velocity prediction
-SCROLL_TRIGGER_THRESHOLD = 8.0  # easier to trigger scroll
-SCROLL_SMOOTHING_ALPHA = 0.5    # more responsive scroll smoothing
-SCROLL_MAX_STEP = 15            # scroll steps per frame (was 180 which was too large)
-SCROLL_COOLDOWN_SECONDS = 0.05  # scroll repeat rate (~20 scrolls/sec max)
-SCROLL_DIRECT_STEP = 5          # fixed scroll units per frame when swipe is active
-PINCH_THRESHOLD = 40            # thumb-index distance in pixels to trigger pinch
-ZOOM_THRESHOLD = 55             # wider threshold for zoom detection (two-hand idle only)
-ZOOM_SPEED = 5                  # ctrl+scroll steps for zoom gestures
-# Minimum history frames before a peace-sign swipe is accepted (prevents false scroll)
-PEACE_SWIPE_MIN_HISTORY = 6
-FATIGUE_THRESHOLD = 0.15
-FATIGUE_WINDOW_FRAMES = 30
-FATIGUE_DURATION_SECONDS = 5
-ACTION_CONFIDENCE_THRESHOLD = 0.75
-GESTURE_HOLD_FRAMES = 3
-TERMINATION_HOLD_FRAMES = 6
-KNN_SAMPLES_REQUIRED = 5
-KNN_K = 3
-CANVAS_SIZE = 280
-CHAR_SIZE = 28
-WRITE_CONFIDENCE_THRESHOLD = 0.70
-PAUSE_THRESHOLD = 0.8
-KEYBOARD_HOVER_SECONDS = 1.0
-AIR_WRITER_STROKE_THICKNESS = 16   # thicker strokes = better EMNIST recognition
-AIR_WRITER_STATIONARY_DISTANCE = 5
-AIR_WRITER_MIN_DRAW_DISTANCE = 2   # capture finer movements
-AIR_WRITER_MIN_PIXELS = 48         # lower threshold = recognize smaller letters
-AIR_WRITER_PADDING = 16
-RECENT_CHARS_LIMIT = 8
-RECOGNIZED_TEXT_PREVIEW_LENGTH = 24
-FPS_TARGET = 60
-WEBCAM_WIDTH = 1280             # lower res = higher FPS from webcam
-WEBCAM_HEIGHT = 720             # 720p is the sweet spot for MediaPipe speed
-DASHBOARD_REFRESH_MS = 50
-DASHBOARD_SNAPSHOT_INTERVAL_SECONDS = 0.25
-DASHBOARD_PORT = 8501
-DASHBOARD_HOST = "127.0.0.1"
-DASHBOARD_HEADLESS = "true"
-DASHBOARD_SCRIPT = str(BASE_DIR / "ui" / "dashboard.py")
-DASHBOARD_STATE_SNAPSHOT = str(BASE_DIR / "ui" / "dashboard_state.json")
-DASHBOARD_STATE_HOST = "127.0.0.1"
-DASHBOARD_STATE_PORT = 8765
-DASHBOARD_STATE_AUTHKEY = "kinesys_dashboard_state"
-DASHBOARD_STATE_ENV_HOST = "KINESYS_SHARED_STATE_HOST"
-DASHBOARD_STATE_ENV_PORT = "KINESYS_SHARED_STATE_PORT"
-DASHBOARD_STATE_ENV_AUTHKEY = "KINESYS_SHARED_STATE_AUTHKEY"
-NGROK_AUTH_TOKEN_ENV = "NGROK_AUTH_TOKEN"
-TRAINER_RECORD_INTERVAL_SECONDS = 0.4
-DEMO_VIDEO_FILE = str(BASE_DIR / "demo_assets" / "demo_session.mp4")
-DEMO_METADATA_FILE = str(BASE_DIR / "demo_assets" / "demo_session.json")
-DEMO_WINDOW_NAME = "KINESYS Demo Playback"
-DEMO_FPS_FALLBACK = 30.0
-KEYBOARD_WINDOW_WIDTH = 920
-KEYBOARD_WINDOW_HEIGHT = 320
-KEYBOARD_WINDOW_POS_X = 40
-KEYBOARD_WINDOW_POS_Y = 40
-KEYBOARD_UI_POLL_MS = 50
-KEYBOARD_BUTTON_PADX = 6
-KEYBOARD_BUTTON_PADY = 6
-KEYBOARD_FONT_SIZE = 16
-EMNIST_BATCH_SIZE = 128
-EMNIST_EPOCHS = 3
-EMNIST_SHUFFLE_BUFFER = 4096
-EMNIST_CLASS_COUNT = 26
-EMNIST_INPUT_CHANNELS = 1
-EMNIST_CONV1_FILTERS = 32
-EMNIST_CONV2_FILTERS = 64
-EMNIST_CONV3_FILTERS = 128
-EMNIST_KERNEL_SIZE = 3
-EMNIST_DENSE_UNITS = 256
-EMNIST_DROPOUT = 0.4
-EMNIST_ROTATION_FACTOR = 10.0 / 180.0
-EMNIST_TRANSLATION_FACTOR = 0.1
-EMNIST_EARLY_STOPPING_PATIENCE = 5
-EMNIST_DATASET_NAME = "emnist/letters"
-EMNIST_TRAIN_SPLIT = "train[:90%]"
-EMNIST_VALIDATION_SPLIT = "train[90%:]"
-EMNIST_TEST_SPLIT = "test"
-GESTURE_HISTORY_FRAMES = 12
-SWIPE_HORIZONTAL_THRESHOLD = 60   # easier horizontal swipe detection
-SWIPE_VERTICAL_THRESHOLD = 50     # easier vertical swipe detection
-FOUR_FINGER_SWIPE_THRESHOLD = 70  # easier 4-finger swipe
-PEACE_FINGER_SPREAD_THRESHOLD = 50  # easier peace sign spread
-CIRCLE_MIN_WIDTH = 35
-CIRCLE_MIN_HEIGHT = 35
-CIRCLE_MAX_START_END_DISTANCE = 55
-CIRCLE_MIN_PATH_LENGTH = 190
-ZOOM_DISTANCE_DELTA_THRESHOLD = 8  # more sensitive zoom detection
-TERMINATION_INDEX_DISTANCE_THRESHOLD = 140
-TERMINATION_VERTICAL_ALIGNMENT_THRESHOLD = 100
-TERMINATION_POINTING_MARGIN = 8
-SCROLL_DELTA_DIVISOR = 4        # more scroll units per pixel of swipe
-SCROLL_MIN_STEP = 1
-MACRO_STATE_DURATION_SECONDS = 0.6
-ACTION_RESET_GRACE_SECONDS = 0.4
-FATIGUE_ALERT_COOLDOWN_SECONDS = 10.0
-FATIGUE_SCORE_SCALE = 10.0
-TRAINER_MIN_SAMPLES_TO_PREDICT = 3
-TRAINER_SUPPORTED_GESTURES = (
-    "INDEX_POINT",
-    "PINCH",
-    "PEACE_SIGN",
-    "TWO_FINGER_SWIPE",
-    "THREE_FINGER_LEFT",
-    "THREE_FINGER_RIGHT",
-    "FOUR_FINGER_SWIPE",
-    "PINCH_ZOOM_IN",
-    "PINCH_ZOOM_OUT",
-    "CIRCLE",
-    "CLOSED_FIST",
-    "OPEN_PALM",
-    "THUMBS_UP",
-    "ROCK_ON",
-)
-
-PROFILES_DIR = str(BASE_DIR / "profiles")
-MODELS_DIR = str(BASE_DIR / "models")
-ANALYTICS_LOG = str(BASE_DIR / "analytics.json")
-MACROS_FILE = str(BASE_DIR / "macros.json")
-EMNIST_MODEL_FILE = str(BASE_DIR / "models" / "emnist_cnn.h5")
-EMNIST_TFLITE_FILE = str(BASE_DIR / "models" / "emnist_cnn.tflite")
-PERSONAL_MODEL_FILE = str(BASE_DIR / "models" / "personal_gestures.pkl")
-DASHBOARD_DIR = str(BASE_DIR / "ui")
-KEYBOARD_WINDOW_TITLE = "KINESYS Keyboard"
-KEYBOARD_LAYOUT_ROWS = (
-    ("Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"),
-    ("A", "S", "D", "F", "G", "H", "J", "K", "L"),
-    ("Z", "X", "C", "V", "B", "N", "M"),
-    ("SPACE", "BACKSPACE"),
-)
-
-FOUNDATION_CAMERA_INDEX = 0
-FOUNDATION_CAMERA_BACKEND = "CAP_DSHOW"
-WEBCAM_FOURCC = "MJPG"
-WEBCAM_CHANNELS = 0
-FRAME_FLIP_CODE = 1
+# ── Camera ────────────────────────────────────────────────────────────────────
+CAMERA_ID = 0
+WEBCAM_WIDTH = 1280
+WEBCAM_HEIGHT = 720
+FRAME_FLIP_CODE = 1          # mirror horizontally
 FRAME_WAIT_KEY_MS = 1
-FRAME_ENCODE_EXTENSION = ".jpg"
-FRAME_JPEG_QUALITY = 80
-EXIT_KEY = "q"
 
+# ── MediaPipe ─────────────────────────────────────────────────────────────────
 MAX_HANDS = 2
-HAND_LANDMARK_COUNT = 21
-LANDMARK_VECTOR_LENGTH = 63
-MIN_DETECTION_CONFIDENCE = 0.6
-MIN_TRACKING_CONFIDENCE = 0.6
+MIN_DETECTION_CONFIDENCE = 0.7
+MIN_TRACKING_CONFIDENCE = 0.7
+GESTURE_HISTORY_FRAMES = 12  # frames kept for motion analysis
 
-WRIST_ID = 0
-THUMB_TIP_ID = 4
-THUMB_IP_ID = 3
-INDEX_FINGER_PIP_ID = 6
-INDEX_FINGER_DIP_ID = 7
-INDEX_FINGER_TIP_ID = 8
-MIDDLE_FINGER_PIP_ID = 10
-MIDDLE_FINGER_TIP_ID = 12
-RING_FINGER_PIP_ID = 14
-RING_FINGER_TIP_ID = 16
-PINKY_PIP_ID = 18
-PINKY_TIP_ID = 20
-
-HUD_MARGIN_X = 16
-HUD_MARGIN_Y = 30
-HUD_LINE_HEIGHT = 28
-HUD_FONT_SCALE = 0.7
-HUD_FONT_THICKNESS = 2
-HUD_TEXT_COLOR = (255, 255, 255)
-HUD_STATE_COLOR = (15, 110, 86)
-HUD_WARNING_COLOR = (113, 43, 19)
-HUD_PANEL_COLOR = (0, 0, 0)
-HUD_PANEL_ALPHA = 0.45
-CURSOR_INDICATOR_RADIUS = 12
-CURSOR_INDICATOR_COLOR = (15, 110, 86)
-CURSOR_INDICATOR_THICKNESS = 2
-TEXT_SHADOW_OFFSET_X = 2
-TEXT_SHADOW_OFFSET_Y = 2
-TEXT_SHADOW_COLOR = (0, 0, 0)
-
+# ── Cursor ────────────────────────────────────────────────────────────────────
+SMOOTHING_ALPHA = 0.55
+CURSOR_ALPHA_MIN = 0.28
+CURSOR_ALPHA_MAX = 0.88
+CURSOR_HISTORY_LENGTH = 4
+CURSOR_DEADZONE_PIXELS = 5.0
+CURSOR_FAST_MOVEMENT_PIXELS = 100.0
+CURSOR_SLOW_MOVEMENT_PIXELS = 12.0
+CURSOR_MAX_STEP_PIXELS = 260.0
+CURSOR_PREDICTION_FACTOR = 0.18
+CLICK_DEBOUNCE_MS = 200         # fast enough to feel responsive
+PYAUTOGUI_FAILSAFE = False
 PYAUTOGUI_PAUSE = 0.0
 PYAUTOGUI_MINIMUM_DURATION = 0.0
 PYAUTOGUI_MINIMUM_SLEEP = 0.0
 PYAUTOGUI_MOVE_DURATION = 0.0
-PYAUTOGUI_FAILSAFE = True
 
-PINCH_GESTURE_CONFIDENCE = 0.95
-INDEX_GESTURE_CONFIDENCE = 0.90
-OPEN_PALM_GESTURE_CONFIDENCE = 0.88
-CLOSED_FIST_GESTURE_CONFIDENCE = 0.86
+# ── Scroll ────────────────────────────────────────────────────────────────────
+SCROLL_SPEED = 5
+SCROLL_TRIGGER_THRESHOLD = 8.0
+SCROLL_SMOOTHING_ALPHA = 0.5
+SCROLL_MAX_STEP = 15
+SCROLL_COOLDOWN_SECONDS = 0.05
+SCROLL_DIRECT_STEP = 5
+
+# ── Gesture thresholds ────────────────────────────────────────────────────────
+PINCH_THRESHOLD = 50          # px — thumb-index distance (wider = easier to pinch)
+ZOOM_THRESHOLD = 55
+ZOOM_SPEED = 5
+SWIPE_HORIZONTAL_THRESHOLD = 35.0
+SWIPE_VERTICAL_THRESHOLD = 35.0
+FOUR_FINGER_SWIPE_THRESHOLD = 30.0
+PEACE_FINGER_SPREAD_THRESHOLD = 30.0
+PEACE_SWIPE_MIN_HISTORY = 6
+
+# ── Gesture confidence ────────────────────────────────────────────────────────
+ACTION_CONFIDENCE_THRESHOLD = 0.75
+PINCH_GESTURE_CONFIDENCE = 0.92
 PEACE_SIGN_GESTURE_CONFIDENCE = 0.90
-TWO_FINGER_SWIPE_GESTURE_CONFIDENCE = 0.86
-THREE_FINGER_GESTURE_CONFIDENCE = 0.87
-FOUR_FINGER_SWIPE_GESTURE_CONFIDENCE = 0.89
-PINCH_ZOOM_GESTURE_CONFIDENCE = 0.91
-CIRCLE_GESTURE_CONFIDENCE = 0.82
-LEFT_MODIFIER_GESTURE_CONFIDENCE = 0.89
-TERMINATION_GESTURE_CONFIDENCE = 0.96
+INDEX_GESTURE_CONFIDENCE = 0.88
+THUMBS_UP_GESTURE_CONFIDENCE = 0.90
+ROCK_ON_GESTURE_CONFIDENCE = 0.90
+OPEN_PALM_GESTURE_CONFIDENCE = 0.88
+CLOSED_FIST_GESTURE_CONFIDENCE = 0.88
+RIGHT_CLICK_GESTURE_CONFIDENCE = 0.85
+TWO_FINGER_SWIPE_GESTURE_CONFIDENCE = 0.85
+THREE_FINGER_GESTURE_CONFIDENCE = 0.85
+FOUR_FINGER_SWIPE_GESTURE_CONFIDENCE = 0.85
+CIRCLE_GESTURE_CONFIDENCE = 0.80
+PINCH_ZOOM_GESTURE_CONFIDENCE = 0.85
+LEFT_MODIFIER_GESTURE_CONFIDENCE = 0.85
+TERMINATION_GESTURE_CONFIDENCE = 0.95
 UNKNOWN_GESTURE_CONFIDENCE = 0.0
-THUMBS_UP_GESTURE_CONFIDENCE = 0.88
-ROCK_ON_GESTURE_CONFIDENCE = 0.87
-RIGHT_CLICK_GESTURE_CONFIDENCE = 0.93
 
-# ── Gesture-triggered program termination ────────────────────────────────────
-# Both hands CLOSED FIST held for TERMINATE_GESTURE_HOLD_FRAMES → shutdown
-TERMINATE_GESTURE_HOLD_FRAMES = 60   # ~2 sec at 30 fps — hold thumbs up to shut down
-VOICE_GESTURE_TERMINATE = "Shutting down Kinesys"
+# ── Circle detection ──────────────────────────────────────────────────────────
+CIRCLE_MIN_PATH_LENGTH = 120.0
+CIRCLE_MIN_WIDTH = 30.0
+CIRCLE_MIN_HEIGHT = 30.0
+CIRCLE_MAX_START_END_DISTANCE = 60.0
 
-# ── Escape / F12 gesture ─────────────────────────────────────────────────────
-# ROCK_ON + CTRL modifier → Escape key  (no modifier = undo, unchanged)
-# ROCK_ON + SHIFT modifier → F12
-VOICE_ESCAPE = "Escape"
-VOICE_F12 = "F twelve"
+# ── Termination gesture ───────────────────────────────────────────────────────
+TERMINATION_INDEX_DISTANCE_THRESHOLD = 80
+TERMINATION_POINTING_MARGIN = 10
+TERMINATION_VERTICAL_ALIGNMENT_THRESHOLD = 40
+TERMINATION_HOLD_FRAMES = 6
+TERMINATE_GESTURE_HOLD_FRAMES = 6
 
-GESTURE_UNKNOWN = "UNKNOWN"
-GESTURE_INDEX_POINT = "INDEX_POINT"
-GESTURE_PINCH = "PINCH"
-GESTURE_PEACE_SIGN = "PEACE_SIGN"
-GESTURE_TWO_FINGER_SWIPE = "TWO_FINGER_SWIPE"
-GESTURE_TWO_FINGER_SWIPE_UP = "TWO_FINGER_SWIPE_UP"
-GESTURE_TWO_FINGER_SWIPE_DOWN = "TWO_FINGER_SWIPE_DOWN"
-GESTURE_THREE_FINGER_LEFT = "THREE_FINGER_LEFT"
-GESTURE_THREE_FINGER_RIGHT = "THREE_FINGER_RIGHT"
-GESTURE_THREE_FINGER_SCROLL_UP = "THREE_FINGER_SCROLL_UP"
-GESTURE_THREE_FINGER_SCROLL_DOWN = "THREE_FINGER_SCROLL_DOWN"
-GESTURE_FOUR_FINGER_SWIPE = "FOUR_FINGER_SWIPE"
-GESTURE_FOUR_FINGER_SWIPE_UP = "FOUR_FINGER_SWIPE_UP"
-GESTURE_FOUR_FINGER_SWIPE_DOWN = "FOUR_FINGER_SWIPE_DOWN"
-GESTURE_PINCH_ZOOM_IN = "PINCH_ZOOM_IN"
-GESTURE_PINCH_ZOOM_OUT = "PINCH_ZOOM_OUT"
-GESTURE_CIRCLE = "CIRCLE"
-GESTURE_OPEN_PALM = "OPEN_PALM"
-GESTURE_CLOSED_FIST = "CLOSED_FIST"
-GESTURE_TWO_HANDS_X = "TWO_HANDS_X"
-GESTURE_OPEN_PALM_LEFT = "OPEN_PALM_LEFT"
-GESTURE_INDEX_LEFT = "INDEX_LEFT"
-GESTURE_PEACE_LEFT = "PEACE_LEFT"
-GESTURE_THREE_FINGERS_LEFT = "THREE_FINGERS_LEFT"
-GESTURE_MIDDLE_FINGERS_RIGHT = "MIDDLE_FINGERS_RIGHT"
-GESTURE_THUMBS_UP = "THUMBS_UP"
-GESTURE_ROCK_ON = "ROCK_ON"
-GESTURE_RIGHT_CLICK = "RIGHT_CLICK"
+# ── Gesture names ─────────────────────────────────────────────────────────────
+GESTURE_INDEX_POINT = "index_point"
+GESTURE_PINCH = "pinch"
+GESTURE_PEACE_SIGN = "peace"
+GESTURE_TWO_FINGER_SWIPE = "two_finger_swipe"
+GESTURE_TWO_FINGER_SWIPE_UP = "two_finger_swipe_up"
+GESTURE_TWO_FINGER_SWIPE_DOWN = "two_finger_swipe_down"
+GESTURE_THREE_FINGER_LEFT = "three_finger_left"
+GESTURE_THREE_FINGER_RIGHT = "three_finger_right"
+GESTURE_THREE_FINGER_SCROLL_UP = "three_finger_scroll_up"
+GESTURE_THREE_FINGER_SCROLL_DOWN = "three_finger_scroll_down"
+GESTURE_FOUR_FINGER_SWIPE = "four_finger_swipe"
+GESTURE_FOUR_FINGER_SWIPE_UP = "four_finger_swipe_up"
+GESTURE_FOUR_FINGER_SWIPE_DOWN = "four_finger_swipe_down"
+GESTURE_PINCH_ZOOM_IN = "pinch_zoom_in"
+GESTURE_PINCH_ZOOM_OUT = "pinch_zoom_out"
+GESTURE_CIRCLE = "circle"
+GESTURE_CLOSED_FIST = "fist"
+GESTURE_OPEN_PALM = "open_palm"
+GESTURE_THUMBS_UP = "thumbs_up"
+GESTURE_ROCK_ON = "rock_on"
+GESTURE_RIGHT_CLICK = "right_click"
+GESTURE_TWO_HANDS_X = "two_hands_x"
+GESTURE_UNKNOWN = "unknown"
+# Modifier (left hand)
+GESTURE_INDEX_LEFT = "index_left"
+GESTURE_PEACE_LEFT = "peace_left"
+GESTURE_THREE_FINGERS_LEFT = "three_fingers_left"
+GESTURE_OPEN_PALM_LEFT = "open_palm_left"
 
-HAND_RIGHT = "Right"
+# ── Modifier names ────────────────────────────────────────────────────────────
+MODIFIER_NONE = "none"
+MODIFIER_CTRL = "ctrl"
+MODIFIER_SHIFT = "shift"
+MODIFIER_ALT = "alt"
+
+# ── Landmark IDs ──────────────────────────────────────────────────────────────
+WRIST_ID = 0
+THUMB_TIP_ID = 4
+THUMB_IP_ID = 3
+THUMB_MCP_ID = 2
+INDEX_FINGER_TIP_ID = 8
+INDEX_FINGER_PIP_ID = 6
+MIDDLE_FINGER_TIP_ID = 12
+MIDDLE_FINGER_PIP_ID = 10
+RING_FINGER_TIP_ID = 16
+RING_FINGER_PIP_ID = 14
+PINKY_TIP_ID = 20
+PINKY_PIP_ID = 18
+HAND_LANDMARK_COUNT = 21
 HAND_LEFT = "Left"
+HAND_RIGHT = "Right"
 HAND_UNKNOWN = "Unknown"
 
+# ── HUD ───────────────────────────────────────────────────────────────────────
+HUD_FONT_SCALE = 0.55
+HUD_FONT_THICKNESS = 1
+HUD_TEXT_COLOR = (255, 255, 255)
+HUD_WARNING_COLOR = (0, 100, 255)
+CURSOR_INDICATOR_COLOR = (0, 255, 255)
+CURSOR_INDICATOR_RADIUS = 8
+CURSOR_INDICATOR_THICKNESS = 2
+
+# ── States ────────────────────────────────────────────────────────────────────
 STATE_IDLE = "IDLE"
 STATE_CURSOR = "CURSOR"
-STATE_WRITE = "WRITE"
 STATE_SCROLL = "SCROLL"
-STATE_MACRO = "MACRO"
-STATE_LOCK = "LOCK"
+STATE_WRITE = "WRITE"
+STATE_KEYBOARD = "KEYBOARD"
 STATE_LAUNCHER = "LAUNCHER"
 STATE_TERMINATED = "TERMINATED"
 
-# ── Launcher mode (from Kynesisnofeat) ───────────────────────────────────────
-LAUNCHER_WORD_BUFFER_LIMIT = 12   # max ISL characters before auto-clear
-LAUNCHER_HOLD_FRAMES = 28         # frames to hold trigger gesture to enter launcher
+# ── State hold frames ─────────────────────────────────────────────────────────
+GESTURE_HOLD_FRAMES = 3       # frames gesture must be stable before firing
+LAUNCHER_HOLD_FRAMES = 25
+MODE_SWITCH_HOLD_FRAMES = 28
 
-MODIFIER_NONE = None
-MODIFIER_CTRL = "CTRL"
-MODIFIER_SHIFT = "SHIFT"
-MODIFIER_ALT = "ALT"
+# ── Keyboard ──────────────────────────────────────────────────────────────────
+KEYBOARD_HOVER_SECONDS = 1.0
+KB_HEIGHT_RATIO = 0.46
 
-KEY_CTRL = "ctrl"
-KEY_SHIFT = "shift"
-KEY_ALT = "alt"
-KEY_TAB = "tab"
-KEY_LEFT_ARROW = "left"
-KEY_RIGHT_ARROW = "right"
+# ── Fatigue ───────────────────────────────────────────────────────────────────
+FATIGUE_ALPHA = 0.7
+FATIGUE_THRESHOLD = 0.15
+FATIGUE_WINDOW_FRAMES = 30
+FATIGUE_DURATION_SECONDS = 5
+FATIGUE_ALERT_COOLDOWN_SECONDS = 60.0
+FATIGUE_SCORE_SCALE = 10.0
 
-REQUIRED_FOUNDATION_FILES = (
-    BASE_DIR / "config.py",
-    BASE_DIR / "check_setup.py",
-    BASE_DIR / "hand_tracker.py",
-    BASE_DIR / "cursor_controller.py",
-    BASE_DIR / "main.py",
-)
+# ── Air writer / EMNIST ───────────────────────────────────────────────────────
+CANVAS_SIZE = 280
+CHAR_SIZE = 28
+WRITE_CONFIDENCE_THRESHOLD = 0.70
+AIR_WRITER_STROKE_THICKNESS = 16
+AIR_WRITER_STATIONARY_DISTANCE = 5
+AIR_WRITER_MIN_DRAW_DISTANCE = 2
+AIR_WRITER_MIN_PIXELS = 48
+AIR_WRITER_PADDING = 16
+PAUSE_THRESHOLD = 0.8
 
-FOUNDATION_DEPENDENCIES = {
-    "cv2": "opencv-python",
-    "mediapipe": "mediapipe",
-    "numpy": "numpy",
-    "pyautogui": "pyautogui",
-}
+# ── KNN trainer ───────────────────────────────────────────────────────────────
+KNN_K = 3
+KNN_SAMPLES_REQUIRED = 5
+TRAINER_MIN_SAMPLES_TO_PREDICT = 3
+LANDMARK_VECTOR_LENGTH = 63
+MODELS_DIR = str(BASE_DIR / "models")
+PERSONAL_MODEL_FILE = str(BASE_DIR / "models" / "personal_gestures.pkl")
+EMNIST_MODEL_FILE = str(BASE_DIR / "models" / "emnist_cnn.h5")
+TRAINER_SUPPORTED_GESTURES = [
+    GESTURE_INDEX_POINT, GESTURE_PINCH, GESTURE_PEACE_SIGN,
+    GESTURE_THUMBS_UP, GESTURE_ROCK_ON, GESTURE_OPEN_PALM,
+    GESTURE_CLOSED_FIST, GESTURE_RIGHT_CLICK,
+]
 
-STRICT_DEPENDENCIES = {
-    "pygetwindow": "pygetwindow",
-    "psutil": "psutil",
-    "pyttsx3": "pyttsx3",
-    "sklearn": "scikit-learn",
-    "streamlit": "streamlit",
-    "tensorflow": "tensorflow",
-}
+# ── Profiles ──────────────────────────────────────────────────────────────────
+PROFILES_DIR = str(BASE_DIR / "profiles")
 
-STRICT_REQUIRED_FILES = (
-    BASE_DIR / "models" / "emnist_cnn.h5",
-)
+# ── Exit ──────────────────────────────────────────────────────────────────────
+EXIT_KEY = ord("q")
 
-SUPPORTED_PYTHON_MIN = (3, 10)
-SUPPORTED_PYTHON_MAX = (3, 12)
+# ── Additional gesture constants ──────────────────────────────────────────────
+ZOOM_DISTANCE_DELTA_THRESHOLD = 20.0

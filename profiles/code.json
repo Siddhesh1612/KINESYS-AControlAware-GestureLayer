@@ -1,17 +1,8 @@
 {
-  "peace_sign": "command_palette",
-  "three_finger_left": "comment_line",
-  "three_finger_right": "uncomment_line",
-  "circle": "save_file",
-  "four_finger_swipe": "switch_editor_tab",
-  "four_finger_swipe_up": "scroll_up",
-  "four_finger_swipe_down": "scroll_down",
-  "pinch_zoom_in": "zoom_in",
-  "pinch_zoom_out": "zoom_out",
-  "thumbs_up": "run_code",
+  "peace": "command_palette",
+  "fist": "terminal",
+  "open_palm": "run_debug",
+  "thumbs_up": "save",
   "rock_on": "delete_line",
-  "two_finger_swipe_up": "scroll_up",
-  "two_finger_swipe_down": "scroll_down",
-  "swipe_up": "scroll_up_editor",
-  "swipe_down": "scroll_down_editor"
+  "index_point": "quick_open"
 }

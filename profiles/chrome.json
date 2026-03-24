@@ -1,16 +1,8 @@
 {
-  "peace_sign": "new_tab",
-  "three_finger_left": "browser_back",
-  "three_finger_right": "browser_forward",
-  "pinch_zoom_in": "zoom_in",
-  "pinch_zoom_out": "zoom_out",
-  "circle": "bookmark_page",
-  "four_finger_swipe": "switch_tab",
-  "four_finger_swipe_up": "scroll_up",
-  "four_finger_swipe_down": "scroll_down",
-  "thumbs_up": "reload",
+  "peace": "new_tab",
+  "fist": "close_tab",
+  "index_point": "address_bar",
   "rock_on": "reopen_tab",
-  "two_finger_swipe_up": "scroll_up",
-  "two_finger_swipe_down": "scroll_down",
-  "closed_fist": "close_tab"
+  "thumbs_up": "reload",
+  "open_palm": "new_window"
 }
