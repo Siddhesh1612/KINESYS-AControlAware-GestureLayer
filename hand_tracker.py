@@ -26,6 +26,8 @@ from config import (
     GESTURE_CIRCLE,
     GESTURE_CLOSED_FIST,
     GESTURE_FOUR_FINGER_SWIPE,
+    GESTURE_FOUR_FINGER_SWIPE_DOWN,
+    GESTURE_FOUR_FINGER_SWIPE_UP,
     GESTURE_INDEX_LEFT,
     GESTURE_INDEX_POINT,
     GESTURE_OPEN_PALM,
@@ -35,10 +37,17 @@ from config import (
     GESTURE_PINCH,
     GESTURE_PINCH_ZOOM_IN,
     GESTURE_PINCH_ZOOM_OUT,
+    GESTURE_RIGHT_CLICK,
+    GESTURE_ROCK_ON,
     GESTURE_THREE_FINGER_LEFT,
     GESTURE_THREE_FINGER_RIGHT,
+    GESTURE_THREE_FINGER_SCROLL_UP,
+    GESTURE_THREE_FINGER_SCROLL_DOWN,
     GESTURE_THREE_FINGERS_LEFT,
+    GESTURE_THUMBS_UP,
     GESTURE_TWO_FINGER_SWIPE,
+    GESTURE_TWO_FINGER_SWIPE_DOWN,
+    GESTURE_TWO_FINGER_SWIPE_UP,
     GESTURE_UNKNOWN,
     GESTURE_TWO_HANDS_X,
     GESTURE_HISTORY_FRAMES,
@@ -65,6 +74,7 @@ from config import (
     OPEN_PALM_GESTURE_CONFIDENCE,
     PEACE_FINGER_SPREAD_THRESHOLD,
     PEACE_SIGN_GESTURE_CONFIDENCE,
+    PEACE_SWIPE_MIN_HISTORY,
     PINCH_GESTURE_CONFIDENCE,
     PINCH_THRESHOLD,
     PINCH_ZOOM_GESTURE_CONFIDENCE,
@@ -72,6 +82,8 @@ from config import (
     PINKY_TIP_ID,
     RING_FINGER_PIP_ID,
     RING_FINGER_TIP_ID,
+    RIGHT_CLICK_GESTURE_CONFIDENCE,
+    ROCK_ON_GESTURE_CONFIDENCE,
     SWIPE_HORIZONTAL_THRESHOLD,
     SWIPE_VERTICAL_THRESHOLD,
     TERMINATION_GESTURE_CONFIDENCE,
@@ -81,6 +93,7 @@ from config import (
     THREE_FINGER_GESTURE_CONFIDENCE,
     THUMB_IP_ID,
     THUMB_TIP_ID,
+    THUMBS_UP_GESTURE_CONFIDENCE,
     TWO_FINGER_SWIPE_GESTURE_CONFIDENCE,
     UNKNOWN_GESTURE_CONFIDENCE,
     WRIST_ID,
@@ -294,10 +307,15 @@ class HandTracker:
             if observation.gesture in {
                 GESTURE_INDEX_POINT,
                 GESTURE_PINCH,
+                GESTURE_RIGHT_CLICK,
                 GESTURE_PINCH_ZOOM_IN,
                 GESTURE_PINCH_ZOOM_OUT,
                 GESTURE_PEACE_SIGN,
                 GESTURE_TWO_FINGER_SWIPE,
+                GESTURE_TWO_FINGER_SWIPE_UP,
+                GESTURE_TWO_FINGER_SWIPE_DOWN,
+                GESTURE_THUMBS_UP,
+                GESTURE_ROCK_ON,
             }:
                 cursor_x, cursor_y = observation.landmarks_px[INDEX_FINGER_TIP_ID]
                 cv2.circle(
@@ -421,7 +439,6 @@ class HandTracker:
         finger_state = observation.finger_state
         motion = observation.motion_features
         pinch_active = observation.pinch_distance <= PINCH_THRESHOLD
-        zoom_active = observation.pinch_distance <= ZOOM_THRESHOLD
         finger_spread = self._distance(
             observation.landmarks_px[INDEX_FINGER_TIP_ID],
             observation.landmarks_px[MIDDLE_FINGER_TIP_ID],
@@ -450,33 +467,101 @@ class HandTracker:
             and not finger_state.ring
             and not finger_state.pinky
         )
+        # Thumbs up: thumb tip clearly above thumb IP (pointing up), all fingers curled
+        thumb_tip_y = observation.landmarks_px[THUMB_TIP_ID][1]
+        thumb_ip_y = observation.landmarks_px[THUMB_IP_ID][1]
+        thumbs_up = (
+            (thumb_tip_y < thumb_ip_y - 20)
+            and not finger_state.index
+            and not finger_state.middle
+            and not finger_state.ring
+            and not finger_state.pinky
+        )
+        # Rock on (horns): index + pinky extended, middle + ring curled
+        rock_on = (
+            finger_state.index
+            and not finger_state.middle
+            and not finger_state.ring
+            and finger_state.pinky
+        )
 
-        if zoom_active and motion.pinch_delta >= ZOOM_DISTANCE_DELTA_THRESHOLD:
-            return GESTURE_PINCH_ZOOM_IN, PINCH_ZOOM_GESTURE_CONFIDENCE
-
-        if zoom_active and motion.pinch_delta <= -ZOOM_DISTANCE_DELTA_THRESHOLD:
-            return GESTURE_PINCH_ZOOM_OUT, PINCH_ZOOM_GESTURE_CONFIDENCE
-
+        # ── Circle ───────────────────────────────────────────────────────────
         if index_only and self._is_circle_motion(motion):
             return GESTURE_CIRCLE, CIRCLE_GESTURE_CONFIDENCE
+
+        # ── 4-finger swipe ───────────────────────────────────────────────────
+        if four_fingers_extended and abs(motion.palm_dy) >= FOUR_FINGER_SWIPE_THRESHOLD:
+            if motion.palm_dy < 0:
+                return GESTURE_FOUR_FINGER_SWIPE_UP, FOUR_FINGER_SWIPE_GESTURE_CONFIDENCE
+            return GESTURE_FOUR_FINGER_SWIPE_DOWN, FOUR_FINGER_SWIPE_GESTURE_CONFIDENCE
 
         if four_fingers_extended and abs(motion.palm_dx) >= FOUR_FINGER_SWIPE_THRESHOLD:
             return GESTURE_FOUR_FINGER_SWIPE, FOUR_FINGER_SWIPE_GESTURE_CONFIDENCE
 
+        # ── 3-finger swipe ───────────────────────────────────────────────────
+        # Vertical motion → scroll (takes priority over horizontal back/forward)
+        if three_fingers_extended and motion.palm_dy <= -SWIPE_VERTICAL_THRESHOLD:
+            return GESTURE_THREE_FINGER_SCROLL_UP, THREE_FINGER_GESTURE_CONFIDENCE
+
+        if three_fingers_extended and motion.palm_dy >= SWIPE_VERTICAL_THRESHOLD:
+            return GESTURE_THREE_FINGER_SCROLL_DOWN, THREE_FINGER_GESTURE_CONFIDENCE
+
+        # Horizontal motion → back / forward
         if three_fingers_extended and motion.palm_dx <= -SWIPE_HORIZONTAL_THRESHOLD:
             return GESTURE_THREE_FINGER_LEFT, THREE_FINGER_GESTURE_CONFIDENCE
 
         if three_fingers_extended and motion.palm_dx >= SWIPE_HORIZONTAL_THRESHOLD:
             return GESTURE_THREE_FINGER_RIGHT, THREE_FINGER_GESTURE_CONFIDENCE
 
-        if peace_fingers and abs(motion.palm_dy) >= SWIPE_VERTICAL_THRESHOLD:
-            return GESTURE_TWO_FINGER_SWIPE, TWO_FINGER_SWIPE_GESTURE_CONFIDENCE
+        # ── Peace sign — check SPREAD first, then swipe ──────────────────────
+        # Must confirm it's a real peace sign (fingers spread apart) before
+        # allowing swipe detection — prevents accidental scroll while holding peace.
+        if peace_fingers:
+            is_peace = finger_spread >= PEACE_FINGER_SPREAD_THRESHOLD
+            has_enough_history = motion.history_length >= PEACE_SWIPE_MIN_HISTORY
 
-        if pinch_active:
+            # Only allow swipe if we have enough history AND fingers are NOT spread
+            # (spread = static peace sign, not a swipe)
+            if has_enough_history and not is_peace:
+                if motion.palm_dy <= -SWIPE_VERTICAL_THRESHOLD:
+                    return GESTURE_TWO_FINGER_SWIPE_UP, TWO_FINGER_SWIPE_GESTURE_CONFIDENCE
+                if motion.palm_dy >= SWIPE_VERTICAL_THRESHOLD:
+                    return GESTURE_TWO_FINGER_SWIPE_DOWN, TWO_FINGER_SWIPE_GESTURE_CONFIDENCE
+                if abs(motion.palm_dy) >= SWIPE_VERTICAL_THRESHOLD:
+                    return GESTURE_TWO_FINGER_SWIPE, TWO_FINGER_SWIPE_GESTURE_CONFIDENCE
+
+            if is_peace:
+                return GESTURE_PEACE_SIGN, PEACE_SIGN_GESTURE_CONFIDENCE
+
+        # ── Pinch — clean (other fingers curled) ─────────────────────────────
+        # Pinch = thumb tip close to index tip, other fingers curled.
+        # This is ALWAYS left-click — no exceptions, no confusion.
+        pinch_clean = (
+            pinch_active
+            and not finger_state.middle
+            and not finger_state.ring
+            and not finger_state.pinky
+        )
+        if pinch_clean:
             return GESTURE_PINCH, PINCH_GESTURE_CONFIDENCE
 
-        if peace_fingers and finger_spread >= PEACE_FINGER_SPREAD_THRESHOLD:
-            return GESTURE_PEACE_SIGN, PEACE_SIGN_GESTURE_CONFIDENCE
+        # ── Right-click — "gun" shape ─────────────────────────────────────────
+        # Thumb extended sideways + index pointing up, NOT pinching.
+        # Thumb tip must be far from index tip so it never overlaps with pinch.
+        right_click_shape = (
+            index_only
+            and finger_state.thumb
+            and not pinch_active
+        )
+        if right_click_shape:
+            return GESTURE_RIGHT_CLICK, RIGHT_CLICK_GESTURE_CONFIDENCE
+
+        # ── Remaining gestures ───────────────────────────────────────────────
+        if thumbs_up:
+            return GESTURE_THUMBS_UP, THUMBS_UP_GESTURE_CONFIDENCE
+
+        if rock_on:
+            return GESTURE_ROCK_ON, ROCK_ON_GESTURE_CONFIDENCE
 
         if index_only:
             return GESTURE_INDEX_POINT, INDEX_GESTURE_CONFIDENCE
@@ -728,8 +813,7 @@ class HandTracker:
         tip_id: int,
         pip_id: int,
     ) -> bool:
-        """Return whether a non-thumb finger is extended upward."""
-
+        """Return whether a non-thumb finger is extended upward (tip above pip)."""
         _, tip_y = landmarks_px[tip_id]
         _, pip_y = landmarks_px[pip_id]
         return tip_y < pip_y
@@ -740,14 +824,14 @@ class HandTracker:
         handedness_label: str,
     ) -> bool:
         """Return whether the thumb is extended away from the palm."""
-
-        thumb_tip_x, _ = landmarks_px[THUMB_TIP_ID]
-        thumb_ip_x, _ = landmarks_px[THUMB_IP_ID]
+        thumb_tip_x, thumb_tip_y = landmarks_px[THUMB_TIP_ID]
+        thumb_ip_x, thumb_ip_y = landmarks_px[THUMB_IP_ID]
+        # Horizontal extension (left/right away from palm)
         if handedness_label == HAND_RIGHT:
             return thumb_tip_x < thumb_ip_x
         if handedness_label == HAND_LEFT:
             return thumb_tip_x > thumb_ip_x
-        return abs(thumb_tip_x - thumb_ip_x) > PINCH_THRESHOLD
+        return abs(thumb_tip_x - thumb_ip_x) > PINCH_THRESHOLD // 2
 
     @staticmethod
     def _is_circle_motion(motion: MotionFeatures) -> bool:

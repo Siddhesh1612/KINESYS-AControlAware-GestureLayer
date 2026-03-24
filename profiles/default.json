@@ -3,5 +3,13 @@
   "three_finger_left": "back",
   "three_finger_right": "forward",
   "circle": "screenshot",
-  "four_finger_swipe": "alt_tab"
+  "four_finger_swipe": "alt_tab",
+  "four_finger_swipe_up": "scroll_up",
+  "four_finger_swipe_down": "scroll_down",
+  "pinch_zoom_in": "zoom_in",
+  "pinch_zoom_out": "zoom_out",
+  "thumbs_up": "save_file",
+  "rock_on": "undo",
+  "two_finger_swipe_up": "scroll_up",
+  "two_finger_swipe_down": "scroll_down"
 }

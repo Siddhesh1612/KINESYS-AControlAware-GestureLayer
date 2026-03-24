@@ -1,25 +1,26 @@
 # Core computer vision and input control
 mediapipe==0.10.14
-opencv-python>=4.10.0,<5
-numpy>=1.26.4,<2
-scipy>=1.14.1,<2
-Pillow>=10.4.0,<11
+opencv-python==4.11.0.86
+numpy==1.26.4
+scipy==1.17.1
+Pillow==10.4.0
 
 # Windows automation and system context
-pyautogui>=0.9.54,<0.10
-pygetwindow>=0.0.9,<0.1
-pywin32>=308,<309
-psutil>=6.1.1,<7
+pyautogui==0.9.54
+pygetwindow==0.0.9
+pywin32==308
+psutil==6.1.1
 
 # ML and training
-scikit-learn>=1.5.2,<1.6
+scikit-learn==1.5.2
 tensorflow==2.13.1; python_version < "3.12"
-tensorflow>=2.16,<2.17; python_version >= "3.12"
-tensorflow-datasets>=4.9.7,<5
+tensorflow==2.16.2; python_version >= "3.12"
+tensorflow-datasets==4.9.9
 
 # UI, tunnel, and runtime support
 streamlit==1.28.2
-streamlit-autorefresh>=1.0.1,<2
-pyngrok>=7.2.3,<8
-python-dotenv>=1.0.1,<2
-pyttsx3>=2.98,<3
+streamlit-autorefresh==1.0.1
+pyngrok==7.5.1
+python-dotenv==1.2.2
+pyttsx3==2.99
+importlib-resources==6.5.2

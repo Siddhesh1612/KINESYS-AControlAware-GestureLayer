@@ -9,6 +9,7 @@ import logging
 import os
 from multiprocessing import Manager
 from multiprocessing.managers import BaseManager
+import socket
 import subprocess
 import sys
 import threading
@@ -44,6 +45,8 @@ from config import (
     GESTURE_CIRCLE,
     GESTURE_CLOSED_FIST,
     GESTURE_FOUR_FINGER_SWIPE,
+    GESTURE_FOUR_FINGER_SWIPE_DOWN,
+    GESTURE_FOUR_FINGER_SWIPE_UP,
     GESTURE_HOLD_FRAMES,
     GESTURE_HISTORY_FRAMES,
     GESTURE_INDEX_POINT,
@@ -52,11 +55,22 @@ from config import (
     GESTURE_PINCH,
     GESTURE_PINCH_ZOOM_IN,
     GESTURE_PINCH_ZOOM_OUT,
+    GESTURE_RIGHT_CLICK,
+    GESTURE_ROCK_ON,
     GESTURE_THREE_FINGER_LEFT,
     GESTURE_THREE_FINGER_RIGHT,
+    GESTURE_THREE_FINGER_SCROLL_UP,
+    GESTURE_THREE_FINGER_SCROLL_DOWN,
+    GESTURE_THUMBS_UP,
     GESTURE_TWO_FINGER_SWIPE,
+    GESTURE_TWO_FINGER_SWIPE_DOWN,
+    GESTURE_TWO_FINGER_SWIPE_UP,
     GESTURE_TWO_HANDS_X,
     GESTURE_UNKNOWN,
+    TERMINATE_GESTURE_HOLD_FRAMES,
+    VOICE_GESTURE_TERMINATE,
+    VOICE_ESCAPE,
+    VOICE_F12,
     FATIGUE_ALPHA,
     HUD_FONT_SCALE,
     HUD_FONT_THICKNESS,
@@ -87,12 +101,19 @@ from config import (
     NGROK_AUTH_TOKEN_ENV,
     RECENT_CHARS_LIMIT,
     RECOGNIZED_TEXT_PREVIEW_LENGTH,
+    SCROLL_COOLDOWN_SECONDS,
     SMOOTHING_ALPHA,
     SCROLL_DELTA_DIVISOR,
+    SCROLL_MAX_STEP,
     SCROLL_MIN_STEP,
+    SCROLL_SMOOTHING_ALPHA,
     SCROLL_SPEED,
+    SCROLL_TRIGGER_THRESHOLD,
+    SCROLL_DIRECT_STEP,
+    ZOOM_SPEED,
     STATE_CURSOR,
     STATE_IDLE,
+    STATE_LAUNCHER,
     STATE_LOCK,
     STATE_MACRO,
     STATE_SCROLL,
@@ -100,6 +121,8 @@ from config import (
     STATE_WRITE,
     TERMINATION_HOLD_FRAMES,
     TRAINER_RECORD_INTERVAL_SECONDS,
+    LAUNCHER_WORD_BUFFER_LIMIT,
+    LAUNCHER_HOLD_FRAMES,
     WEBCAM_FOURCC,
     WEBCAM_HEIGHT,
     WEBCAM_WIDTH,
@@ -156,6 +179,7 @@ ACTION_ZOOM_OUT = "zoom_out"
 ACTION_BOOKMARK_PAGE = "bookmark_page"
 ACTION_SAVE_FILE = "save_file"
 ACTION_SCROLL_UP_EDITOR = "scroll_up_editor"
+ACTION_SCROLL_DOWN_EDITOR = "scroll_down_editor"
 ACTION_SWITCH_TAB = "switch_tab"
 ACTION_SWITCH_EDITOR_TAB = "switch_editor_tab"
 ACTION_TOGGLE_MUTE = "toggle_mute"
@@ -165,6 +189,37 @@ ACTION_ALT_TAB = "alt_tab"
 ACTION_SCREENSHOT = "screenshot"
 ACTION_COMMENT_LINE = "comment_line"
 ACTION_UNCOMMENT_LINE = "uncomment_line"
+ACTION_CLOSE_TAB = "close_tab"
+ACTION_REOPEN_TAB = "reopen_tab"
+ACTION_RELOAD = "reload"
+ACTION_NEW_WINDOW = "new_window"
+ACTION_UNDO = "undo"
+ACTION_REDO = "redo"
+ACTION_COPY = "copy"
+ACTION_PASTE = "paste"
+ACTION_CUT = "cut"
+ACTION_SELECT_ALL = "select_all"
+ACTION_FIND = "find"
+ACTION_VOLUME_UP = "volume_up"
+ACTION_VOLUME_DOWN = "volume_down"
+ACTION_MEDIA_PLAY_PAUSE = "media_play_pause"
+ACTION_MEDIA_NEXT = "media_next"
+ACTION_MEDIA_PREV = "media_prev"
+ACTION_FULLSCREEN = "fullscreen"
+ACTION_MINIMIZE = "minimize"
+ACTION_SCROLL_UP = "scroll_up"
+ACTION_SCROLL_DOWN = "scroll_down"
+ACTION_LEAVE_MEETING = "leave_meeting"
+ACTION_DELETE_LINE = "delete_line"
+ACTION_COMMAND_PALETTE = "command_palette"
+ACTION_QUICK_OPEN = "quick_open"
+ACTION_TERMINAL = "terminal"
+ACTION_RUN_DEBUG = "run_debug"
+ACTION_SPEED_UP = "speed_up"
+ACTION_SLOW_DOWN = "slow_down"
+ACTION_MUTE_VIDEO = "mute_video"
+ACTION_NEXT_TRACK = "next_track"
+ACTION_PREV_TRACK = "prev_track"
 
 VOICE_FATIGUE = "Please take a break"
 VOICE_LOCK = "Kinesys locked"
@@ -179,6 +234,7 @@ DISPLAY_STATE_COLORS = {
     STATE_WRITE: (60, 52, 137),
     STATE_SCROLL: (99, 56, 6),
     STATE_MACRO: (26, 74, 107),
+    STATE_LAUNCHER: (200, 50, 200),
     STATE_LOCK: (113, 43, 19),
     STATE_TERMINATED: (121, 31, 31),
 }
@@ -246,6 +302,8 @@ class KinesysGestureEngineApp:
         self._last_frame_time = time.perf_counter()
         self._macro_started_at = 0.0
         self._state_entered_at = time.perf_counter()
+        self._smoothed_scroll_units = 0.0
+        self._last_scroll_time = 0.0
         self._shared_state_manager = None
         self._shared_state = None
         self._current_context = None
@@ -271,12 +329,23 @@ class KinesysGestureEngineApp:
         self._last_handled_train_request = 0
         self._last_handled_delete_request = 0
         self._last_trainer_sample_time = 0.0
+        # Launcher mode (from Kynesisnofeat)
+        self._launcher_word_buffer: str = ""
+        self._launcher_hold_tracker = StabilizedValueTracker(
+            hold_frames=LAUNCHER_HOLD_FRAMES,
+            initial_value=False,
+        )
+        # Gesture-triggered termination tracker (THUMBS_UP + CTRL held)
+        self._gesture_terminate_tracker = StabilizedValueTracker(
+            hold_frames=TERMINATE_GESTURE_HOLD_FRAMES,
+            initial_value=False,
+        )
 
     def run(self) -> int:
         """Start the runtime after validating setup and runtime dependencies."""
 
         configure_logging()
-        if not run_checks(strict=False, skip_webcam=False):
+        if not run_checks(strict=True, skip_webcam=False):
             return 1
 
         try:
@@ -292,6 +361,7 @@ class KinesysGestureEngineApp:
             from context_engine import ContextEngine
             from cursor_controller import CursorController
             from fatigue_detector import FatigueDetector
+            from gesture_recognizer import match_app, launch_app
             from gesture_trainer import GestureTrainer
             from hand_tracker import HandTracker
             from macro_engine import MacroEngine
@@ -362,6 +432,15 @@ class KinesysGestureEngineApp:
                     self._set_state(STATE_TERMINATED)
                     break
 
+                # Gesture-triggered termination: THUMBS_UP + CTRL held
+                if self._handle_gesture_termination(
+                    analysis=analysis,
+                    context_snapshot=context_snapshot,
+                    voice_feedback=voice_feedback,
+                ):
+                    self._set_state(STATE_TERMINATED)
+                    break
+
                 stabilized_gesture = self._action_hold_tracker.update(analysis.action_gesture)
                 if stabilized_gesture is not None:
                     self._handle_stabilized_gesture(
@@ -371,6 +450,8 @@ class KinesysGestureEngineApp:
                         pyautogui_module=pyautogui,
                         cursor=cursor,
                         voice_feedback=voice_feedback,
+                        match_app_fn=match_app,
+                        launch_app_fn=launch_app,
                     )
 
                 self._refresh_runtime_state(analysis)
@@ -445,6 +526,30 @@ class KinesysGestureEngineApp:
                 context_snapshot=context_snapshot,
             )
         return termination_ready
+
+    def _handle_gesture_termination(
+        self,
+        analysis: Any,
+        context_snapshot: Any,
+        voice_feedback: Any,
+    ) -> bool:
+        """Return True when THUMBS_UP is held for ~2 seconds to terminate.
+
+        Simple single-hand gesture — no modifier, no two-hand requirement.
+        The hold tracker prevents accidental triggers (must sustain for 60 frames).
+        The stabilized gesture handler is bypassed while this is counting.
+        """
+        is_thumbs_up = (analysis.action_gesture == GESTURE_THUMBS_UP)
+        stabilized = self._gesture_terminate_tracker.update(is_thumbs_up)
+        if stabilized:
+            voice_feedback.speak(VOICE_GESTURE_TERMINATE)
+            self._record_gesture_event(
+                gesture_name=GESTURE_THUMBS_UP,
+                analysis=analysis,
+                context_snapshot=context_snapshot,
+            )
+            return True
+        return False
 
     def _apply_personal_gesture_override(self, analysis: Any) -> None:
         """Override the default action gesture when the personal KNN model is confident."""
@@ -522,6 +627,13 @@ class KinesysGestureEngineApp:
             LOGGER.warning("Dashboard script not found at %s", DASHBOARD_SCRIPT)
             return
 
+        if self._is_port_in_use(DASHBOARD_HOST, DASHBOARD_PORT):
+            LOGGER.info(
+                "Dashboard port %s is already in use; assuming Streamlit is already running.",
+                DASHBOARD_PORT,
+            )
+            return
+
         dashboard_environment = os.environ.copy()
         dashboard_environment[DASHBOARD_STATE_ENV_HOST] = DASHBOARD_STATE_HOST
         dashboard_environment[DASHBOARD_STATE_ENV_PORT] = str(DASHBOARD_STATE_PORT)
@@ -550,6 +662,16 @@ class KinesysGestureEngineApp:
         except Exception as exc:
             LOGGER.exception("Failed to launch Streamlit dashboard: %s", exc)
             self._dashboard_process = None
+
+    @staticmethod
+    def _is_port_in_use(host: str, port: int) -> bool:
+        """Return whether a TCP host/port pair is already bound by another process."""
+
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            return False
 
     def _start_ngrok_tunnel(self) -> None:
         """Start an ngrok tunnel for the dashboard if a token is configured."""
@@ -768,18 +890,31 @@ class KinesysGestureEngineApp:
         pyautogui_module: Any,
         cursor: Any,
         voice_feedback: Any,
+        match_app_fn: Any = None,
+        launch_app_fn: Any = None,
     ) -> None:
         """Apply one-shot actions and state transitions for stabilized gestures."""
 
         if stabilized_gesture == GESTURE_OPEN_PALM:
             if self._state == STATE_LOCK:
                 voice_feedback.speak(VOICE_UNLOCK)
+            if self._state == STATE_LAUNCHER:
+                self._launcher_word_buffer = ""
             self._set_state(STATE_IDLE)
             cursor.reset()
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_CLOSED_FIST:
+            # In launcher mode, fist confirms the current word buffer and launches
+            if self._state == STATE_LAUNCHER and match_app_fn and launch_app_fn:
+                self._handle_launcher_confirm(
+                    voice_feedback=voice_feedback,
+                    match_app_fn=match_app_fn,
+                    launch_app_fn=launch_app_fn,
+                )
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
             self._set_state(STATE_LOCK)
             cursor.reset()
             voice_feedback.speak(VOICE_LOCK)
@@ -789,7 +924,34 @@ class KinesysGestureEngineApp:
         if self._state == STATE_LOCK:
             return
 
+        # In WRITE state: only PINCH exits (to click and return to cursor)
+        # All other gestures are consumed by the air writer
         if self._state == STATE_WRITE:
+            if stabilized_gesture == GESTURE_PINCH:
+                self._set_state(STATE_CURSOR)
+                self._perform_click(
+                    pyautogui_module=pyautogui_module,
+                    cursor=cursor,
+                    modifier_active=analysis.modifier_active,
+                )
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            elif stabilized_gesture == GESTURE_RIGHT_CLICK:
+                self._set_state(STATE_CURSOR)
+                self._perform_right_click(cursor=cursor)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        # In launcher mode, ISL characters are handled in _dispatch_continuous_actions.
+        # Only OPEN_PALM (exit) and CLOSED_FIST (confirm) are handled above.
+        if self._state == STATE_LAUNCHER:
+            return
+
+        # Enter launcher mode: hold FOUR_FINGER_SWIPE with SHIFT modifier
+        if stabilized_gesture == GESTURE_FOUR_FINGER_SWIPE and analysis.modifier_active == MODIFIER_SHIFT:
+            self._set_state(STATE_LAUNCHER)
+            self._launcher_word_buffer = ""
+            voice_feedback.speak("Launcher mode")
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_INDEX_POINT:
@@ -798,16 +960,48 @@ class KinesysGestureEngineApp:
             return
 
         if stabilized_gesture == GESTURE_PINCH:
+            # If we're in cursor mode and pinch happens, click first then check
+            # if we landed on a text field — if so, enter write mode automatically
             self._set_state(STATE_CURSOR)
-            self._perform_click(
+            clicked = self._perform_click(
                 pyautogui_module=pyautogui_module,
                 cursor=cursor,
                 modifier_active=analysis.modifier_active,
             )
+            # After click, check if a text input is now focused via accessibility
+            if clicked and self._is_text_input_focused(pyautogui_module):
+                self._set_state(STATE_WRITE)
+                voice_feedback.speak(VOICE_WRITE_MODE)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_RIGHT_CLICK:
+            self._set_state(STATE_CURSOR)
+            self._perform_right_click(cursor=cursor)
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
         if stabilized_gesture == GESTURE_TWO_FINGER_SWIPE:
+            self._set_state(STATE_SCROLL)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_TWO_FINGER_SWIPE_UP:
+            self._set_state(STATE_SCROLL)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_TWO_FINGER_SWIPE_DOWN:
+            self._set_state(STATE_SCROLL)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_THREE_FINGER_SCROLL_UP:
+            self._set_state(STATE_SCROLL)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_THREE_FINGER_SCROLL_DOWN:
             self._set_state(STATE_SCROLL)
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
@@ -878,6 +1072,7 @@ class KinesysGestureEngineApp:
                 self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_hotkey(pyautogui_module, [KEY_ALT, KEY_LEFT_ARROW])
+            self._set_state(STATE_CURSOR)
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
@@ -892,6 +1087,7 @@ class KinesysGestureEngineApp:
                 self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
             self._perform_hotkey(pyautogui_module, [KEY_ALT, KEY_RIGHT_ARROW])
+            self._set_state(STATE_CURSOR)
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
@@ -910,6 +1106,85 @@ class KinesysGestureEngineApp:
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
+        if stabilized_gesture == GESTURE_FOUR_FINGER_SWIPE_UP:
+            if self._dispatch_context_action(
+                gesture_name=stabilized_gesture,
+                analysis=analysis,
+                context_snapshot=context_snapshot,
+                pyautogui_module=pyautogui_module,
+            ):
+                self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+            self._perform_scroll(pyautogui_module=pyautogui_module, scroll_units=SCROLL_SPEED * 3, modifier_active=None)
+            self._set_state(STATE_CURSOR)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_FOUR_FINGER_SWIPE_DOWN:
+            if self._dispatch_context_action(
+                gesture_name=stabilized_gesture,
+                analysis=analysis,
+                context_snapshot=context_snapshot,
+                pyautogui_module=pyautogui_module,
+            ):
+                self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+            self._perform_scroll(pyautogui_module=pyautogui_module, scroll_units=-SCROLL_SPEED * 3, modifier_active=None)
+            self._set_state(STATE_CURSOR)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_THUMBS_UP:
+            # If terminate tracker is counting, don't also fire save — let it build up
+            if self._gesture_terminate_tracker.progress(True) > 0:
+                return
+            if self._dispatch_context_action(
+                gesture_name=stabilized_gesture,
+                analysis=analysis,
+                context_snapshot=context_snapshot,
+                pyautogui_module=pyautogui_module,
+            ):
+                self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+            # Default: save (Ctrl+S)
+            self._perform_hotkey(pyautogui_module, [KEY_CTRL, "s"])
+            self._set_state(STATE_CURSOR)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
+        if stabilized_gesture == GESTURE_ROCK_ON:
+            if self._dispatch_context_action(
+                gesture_name=stabilized_gesture,
+                analysis=analysis,
+                context_snapshot=context_snapshot,
+                pyautogui_module=pyautogui_module,
+            ):
+                self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+            # ROCK_ON + CTRL → Escape
+            if analysis.modifier_active == MODIFIER_CTRL:
+                pyautogui_module.press("escape")
+                voice_feedback.speak(VOICE_ESCAPE)
+                self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+            # ROCK_ON + SHIFT → F12
+            if analysis.modifier_active == MODIFIER_SHIFT:
+                pyautogui_module.press("f12")
+                voice_feedback.speak(VOICE_F12)
+                self._set_state(STATE_CURSOR)
+                self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+                return
+            # Default: undo (Ctrl+Z)
+            self._perform_hotkey(pyautogui_module, [KEY_CTRL, "z"])
+            self._set_state(STATE_CURSOR)
+            self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
+            return
+
         if stabilized_gesture == GESTURE_PINCH_ZOOM_IN:
             if self._dispatch_context_action(
                 gesture_name=stabilized_gesture,
@@ -920,7 +1195,8 @@ class KinesysGestureEngineApp:
                 self._set_state(STATE_CURSOR)
                 self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
-            self._perform_zoom(pyautogui_module=pyautogui_module, direction=SCROLL_SPEED)
+            self._perform_zoom(pyautogui_module=pyautogui_module, direction=1)
+            self._set_state(STATE_CURSOR)
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
             return
 
@@ -934,13 +1210,14 @@ class KinesysGestureEngineApp:
                 self._set_state(STATE_CURSOR)
                 self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
                 return
-            self._perform_zoom(pyautogui_module=pyautogui_module, direction=-SCROLL_SPEED)
+            self._perform_zoom(pyautogui_module=pyautogui_module, direction=-1)
+            self._set_state(STATE_CURSOR)
             self._record_gesture_event(stabilized_gesture, analysis, context_snapshot)
 
     def _refresh_runtime_state(self, analysis: Any) -> None:
         """Apply non-blocking state updates driven by raw gesture continuity."""
 
-        if self._state == STATE_LOCK or self._state == STATE_TERMINATED:
+        if self._state in {STATE_LOCK, STATE_TERMINATED, STATE_LAUNCHER}:
             return
 
         if self._state == STATE_MACRO:
@@ -948,10 +1225,18 @@ class KinesysGestureEngineApp:
                 self._set_state(STATE_CURSOR)
             return
 
-        if self._state == STATE_SCROLL and analysis.action_gesture != GESTURE_TWO_FINGER_SWIPE:
-            if analysis.action_gesture in {GESTURE_INDEX_POINT, GESTURE_PINCH}:
+        if self._state == STATE_SCROLL and analysis.action_gesture not in {
+            GESTURE_TWO_FINGER_SWIPE,
+            GESTURE_TWO_FINGER_SWIPE_UP,
+            GESTURE_TWO_FINGER_SWIPE_DOWN,
+            GESTURE_PEACE_SIGN,
+            GESTURE_THREE_FINGER_SCROLL_UP,
+            GESTURE_THREE_FINGER_SCROLL_DOWN,
+        }:
+            if analysis.action_gesture in {GESTURE_INDEX_POINT, GESTURE_PINCH, GESTURE_RIGHT_CLICK}:
                 self._set_state(STATE_CURSOR)
-            elif time.perf_counter() - self._state_entered_at >= ACTION_RESET_GRACE_SECONDS:
+            elif time.perf_counter() - self._state_entered_at >= 1.5:
+                # Long grace period — user may briefly drop the swipe pose mid-scroll
                 self._set_state(STATE_IDLE)
             return
 
@@ -969,32 +1254,43 @@ class KinesysGestureEngineApp:
     ) -> None:
         """Run continuous cursor and scroll actions for the current state."""
 
-        if self._state == STATE_WRITE and self._air_writer is not None:
+        if self._state in {STATE_WRITE, STATE_LAUNCHER} and self._air_writer is not None:
             index_point = (
                 analysis.action_hand.landmarks_px[INDEX_FINGER_TIP_ID]
                 if analysis.action_hand is not None
                 else None
             )
+            # Allow drawing with index point OR peace sign in write mode
+            allow_draw = analysis.action_gesture in {
+                GESTURE_INDEX_POINT,
+                GESTURE_PEACE_SIGN,
+            }
             write_update = self._air_writer.update(
                 index_point=index_point,
                 frame_size=(frame_width, frame_height),
-                allow_stroke_drawing=analysis.action_gesture == GESTURE_PEACE_SIGN,
+                allow_stroke_drawing=allow_draw,
             )
             self._last_write_confidence = write_update.confidence
             if write_update.character is not None:
-                self._handle_write_update(
-                    write_update=write_update,
-                    pyautogui_module=pyautogui_module,
-                )
+                if self._state == STATE_WRITE:
+                    self._handle_write_update(
+                        write_update=write_update,
+                        pyautogui_module=pyautogui_module,
+                    )
+                else:
+                    self._handle_launcher_write_update(
+                        write_update=write_update,
+                        voice_feedback=None,  # voice feedback not available here; handled on confirm
+                    )
 
         if self._state == STATE_LOCK or analysis.action_hand is None:
             return
 
-        if self._state == STATE_CURSOR and analysis.action_gesture in {
+        if self._state in {STATE_CURSOR, STATE_WRITE} and analysis.action_gesture in {
             GESTURE_INDEX_POINT,
             GESTURE_PINCH,
-            GESTURE_PINCH_ZOOM_IN,
-            GESTURE_PINCH_ZOOM_OUT,
+            GESTURE_RIGHT_CLICK,
+            GESTURE_PEACE_SIGN,
         }:
             cursor.move_cursor(
                 landmark_point=analysis.action_hand.landmarks_px[INDEX_FINGER_TIP_ID],
@@ -1003,14 +1299,26 @@ class KinesysGestureEngineApp:
             )
             return
 
-        if self._state == STATE_SCROLL and analysis.action_gesture == GESTURE_TWO_FINGER_SWIPE:
-            scroll_units = self._calculate_scroll_units(analysis.action_hand.motion_features.palm_dy)
-            if scroll_units != 0:
-                self._perform_scroll(
-                    pyautogui_module=pyautogui_module,
-                    scroll_units=scroll_units,
-                    modifier_active=analysis.modifier_active,
-                )
+        if self._state == STATE_SCROLL and analysis.action_gesture in {
+            GESTURE_TWO_FINGER_SWIPE,
+            GESTURE_TWO_FINGER_SWIPE_UP,
+            GESTURE_TWO_FINGER_SWIPE_DOWN,
+            GESTURE_THREE_FINGER_SCROLL_UP,
+            GESTURE_THREE_FINGER_SCROLL_DOWN,
+        }:
+            # Direct scroll — direction from gesture name, fallback to palm_dy
+            if analysis.action_gesture in {GESTURE_TWO_FINGER_SWIPE_UP, GESTURE_THREE_FINGER_SCROLL_UP}:
+                scroll_units = SCROLL_DIRECT_STEP
+            elif analysis.action_gesture in {GESTURE_TWO_FINGER_SWIPE_DOWN, GESTURE_THREE_FINGER_SCROLL_DOWN}:
+                scroll_units = -SCROLL_DIRECT_STEP
+            else:
+                palm_dy = analysis.action_hand.motion_features.palm_dy
+                scroll_units = -SCROLL_DIRECT_STEP if palm_dy > 0 else SCROLL_DIRECT_STEP
+            self._perform_scroll(
+                pyautogui_module=pyautogui_module,
+                scroll_units=scroll_units,
+                modifier_active=analysis.modifier_active,
+            )
 
     def _play_macro_for_context(self, context_snapshot: Any, pyautogui_module: Any) -> str | None:
         """Play the best matching macro for the current app and return its name."""
@@ -1052,6 +1360,45 @@ class KinesysGestureEngineApp:
             self._remember_character(typed_token)
         except Exception as exc:
             LOGGER.exception("Write-mode typing failed: %s", exc)
+
+    def _handle_launcher_write_update(self, write_update: Any, voice_feedback: Any) -> None:
+        """Append a recognized ISL character to the launcher word buffer."""
+
+        char = write_update.character
+        if char is None or char == WRITE_BACKSPACE_TOKEN:
+            if char == WRITE_BACKSPACE_TOKEN and self._launcher_word_buffer:
+                self._launcher_word_buffer = self._launcher_word_buffer[:-1]
+            return
+
+        if char == " ":
+            return  # spaces not meaningful in app names
+
+        self._launcher_word_buffer += char.upper()
+        if len(self._launcher_word_buffer) > LAUNCHER_WORD_BUFFER_LIMIT:
+            self._launcher_word_buffer = self._launcher_word_buffer[-LAUNCHER_WORD_BUFFER_LIMIT:]
+
+    def _handle_launcher_confirm(
+        self,
+        voice_feedback: Any,
+        match_app_fn: Any,
+        launch_app_fn: Any,
+    ) -> None:
+        """Match the current word buffer to an app and launch it."""
+
+        word = self._launcher_word_buffer.strip()
+        if not word:
+            voice_feedback.speak("Spell an app name first")
+            return
+
+        app_key, command = match_app_fn(word)
+        if app_key and command:
+            voice_feedback.speak(f"Launching {app_key}")
+            launch_app_fn(command)
+        else:
+            voice_feedback.speak(f"No app matched for {word}")
+
+        self._launcher_word_buffer = ""
+        self._set_state(STATE_IDLE)
 
     def _remember_character(self, character: str) -> None:
         """Keep a bounded list of the most recent typed characters."""
@@ -1126,7 +1473,7 @@ class KinesysGestureEngineApp:
             if action_name == ACTION_NEW_TAB:
                 pyautogui_module.hotkey(KEY_CTRL, "t")
                 return True
-            if action_name == ACTION_RUN_CODE:
+            if action_name == ACTION_RUN_CODE or action_name == ACTION_RUN_DEBUG:
                 pyautogui_module.press("f5")
                 return True
             if action_name == ACTION_RAISE_HAND:
@@ -1153,8 +1500,11 @@ class KinesysGestureEngineApp:
             if action_name == ACTION_SAVE_FILE:
                 pyautogui_module.hotkey(KEY_CTRL, "s")
                 return True
-            if action_name == ACTION_SCROLL_UP_EDITOR:
-                pyautogui_module.scroll(SCROLL_SPEED)
+            if action_name == ACTION_SCROLL_UP_EDITOR or action_name == ACTION_SCROLL_UP:
+                pyautogui_module.scroll(SCROLL_SPEED * 3)
+                return True
+            if action_name == ACTION_SCROLL_DOWN_EDITOR or action_name == ACTION_SCROLL_DOWN:
+                pyautogui_module.scroll(-SCROLL_SPEED * 3)
                 return True
             if action_name in {ACTION_SWITCH_TAB, ACTION_SWITCH_EDITOR_TAB}:
                 pyautogui_module.hotkey(KEY_CTRL, KEY_TAB)
@@ -1162,7 +1512,7 @@ class KinesysGestureEngineApp:
             if action_name == ACTION_TOGGLE_MUTE:
                 pyautogui_module.hotkey(KEY_ALT, "a")
                 return True
-            if action_name == ACTION_TOGGLE_CAMERA:
+            if action_name in {ACTION_TOGGLE_CAMERA, ACTION_MUTE_VIDEO}:
                 pyautogui_module.hotkey(KEY_ALT, "v")
                 return True
             if action_name == ACTION_SWITCH_PARTICIPANT_VIEW:
@@ -1177,6 +1527,81 @@ class KinesysGestureEngineApp:
             if action_name == ACTION_UNCOMMENT_LINE:
                 pyautogui_module.hotkey(KEY_CTRL, "/")
                 return True
+            if action_name == ACTION_CLOSE_TAB:
+                pyautogui_module.hotkey(KEY_CTRL, "w")
+                return True
+            if action_name == ACTION_REOPEN_TAB:
+                pyautogui_module.hotkey(KEY_CTRL, KEY_SHIFT, "t")
+                return True
+            if action_name == ACTION_RELOAD:
+                pyautogui_module.hotkey(KEY_CTRL, "r")
+                return True
+            if action_name == ACTION_NEW_WINDOW:
+                pyautogui_module.hotkey(KEY_CTRL, "n")
+                return True
+            if action_name == ACTION_UNDO:
+                pyautogui_module.hotkey(KEY_CTRL, "z")
+                return True
+            if action_name == ACTION_REDO:
+                pyautogui_module.hotkey(KEY_CTRL, "y")
+                return True
+            if action_name == ACTION_COPY:
+                pyautogui_module.hotkey(KEY_CTRL, "c")
+                return True
+            if action_name == ACTION_PASTE:
+                pyautogui_module.hotkey(KEY_CTRL, "v")
+                return True
+            if action_name == ACTION_CUT:
+                pyautogui_module.hotkey(KEY_CTRL, "x")
+                return True
+            if action_name == ACTION_SELECT_ALL:
+                pyautogui_module.hotkey(KEY_CTRL, "a")
+                return True
+            if action_name == ACTION_FIND:
+                pyautogui_module.hotkey(KEY_CTRL, "f")
+                return True
+            if action_name == ACTION_VOLUME_UP:
+                pyautogui_module.press("volumeup")
+                return True
+            if action_name == ACTION_VOLUME_DOWN:
+                pyautogui_module.press("volumedown")
+                return True
+            if action_name == ACTION_MEDIA_PLAY_PAUSE:
+                pyautogui_module.press("playpause")
+                return True
+            if action_name == ACTION_MEDIA_NEXT or action_name == ACTION_NEXT_TRACK:
+                pyautogui_module.press("nexttrack")
+                return True
+            if action_name == ACTION_MEDIA_PREV or action_name == ACTION_PREV_TRACK:
+                pyautogui_module.press("prevtrack")
+                return True
+            if action_name == ACTION_FULLSCREEN:
+                pyautogui_module.press("f11")
+                return True
+            if action_name == ACTION_MINIMIZE:
+                pyautogui_module.hotkey("win", "down")
+                return True
+            if action_name == ACTION_LEAVE_MEETING:
+                pyautogui_module.hotkey(KEY_ALT, "q")
+                return True
+            if action_name == ACTION_DELETE_LINE:
+                pyautogui_module.hotkey(KEY_CTRL, KEY_SHIFT, "k")
+                return True
+            if action_name == ACTION_COMMAND_PALETTE:
+                pyautogui_module.hotkey(KEY_CTRL, KEY_SHIFT, "p")
+                return True
+            if action_name == ACTION_QUICK_OPEN:
+                pyautogui_module.hotkey(KEY_CTRL, "p")
+                return True
+            if action_name == ACTION_TERMINAL:
+                pyautogui_module.hotkey(KEY_CTRL, "`")
+                return True
+            if action_name == ACTION_SPEED_UP:
+                pyautogui_module.hotkey(KEY_SHIFT, ".")
+                return True
+            if action_name == ACTION_SLOW_DOWN:
+                pyautogui_module.hotkey(KEY_SHIFT, ",")
+                return True
         except Exception as exc:
             LOGGER.exception("Profile action execution failed for %s: %s", action_name, exc)
             return False
@@ -1189,19 +1614,22 @@ class KinesysGestureEngineApp:
         pyautogui_module: Any,
         cursor: Any,
         modifier_active: str | None,
-    ) -> None:
-        """Execute a click, optionally wrapped in a keyboard modifier."""
+    ) -> bool:
+        """Execute a click, optionally wrapped in a keyboard modifier. Returns True if click fired."""
 
         modifier_key = self._modifier_to_key(modifier_active)
         if modifier_key is None:
             if cursor.click():
                 self._last_click_message_time = time.perf_counter()
-            return
+                return True
+            return False
 
+        fired = False
         try:
             pyautogui_module.keyDown(modifier_key)
             if cursor.click():
                 self._last_click_message_time = time.perf_counter()
+                fired = True
         except Exception as exc:
             LOGGER.exception("Modified click failed: %s", exc)
         finally:
@@ -1209,6 +1637,46 @@ class KinesysGestureEngineApp:
                 pyautogui_module.keyUp(modifier_key)
             except Exception as exc:
                 LOGGER.exception("Modifier release failed after click: %s", exc)
+        return fired
+
+    def _perform_right_click(self, cursor: Any) -> None:
+        """Execute a right-click at the current cursor position."""
+        try:
+            cursor.right_click()
+        except Exception as exc:
+            LOGGER.exception("Right-click dispatch failed: %s", exc)
+
+    @staticmethod
+    def _is_text_input_focused(pyautogui_module: Any) -> bool:
+        """Detect if a text input field is currently focused using Windows GetGUIThreadInfo."""
+        try:
+            import ctypes
+            # Give the click a moment to register focus
+            time.sleep(0.06)
+
+            class GUITHREADINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.c_uint),
+                    ("flags", ctypes.c_uint),
+                    ("hwndActive", ctypes.c_void_p),
+                    ("hwndFocus", ctypes.c_void_p),
+                    ("hwndCapture", ctypes.c_void_p),
+                    ("hwndMenuOwner", ctypes.c_void_p),
+                    ("hwndMoveSize", ctypes.c_void_p),
+                    ("hwndCaret", ctypes.c_void_p),
+                    ("rcCaret", ctypes.c_int * 4),
+                ]
+
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            thread_id = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+            gti = GUITHREADINFO()
+            gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+            if ctypes.windll.user32.GetGUIThreadInfo(thread_id, ctypes.byref(gti)):
+                # hwndCaret is non-null when a blinking text caret is active
+                return bool(gti.hwndCaret)
+        except Exception as exc:
+            LOGGER.debug("Text input detection failed: %s", exc)
+        return False
 
     def _perform_scroll(
         self,
@@ -1218,11 +1686,16 @@ class KinesysGestureEngineApp:
     ) -> None:
         """Execute a scroll step, optionally wrapped in a modifier key."""
 
+        now = time.perf_counter()
+        if now - self._last_scroll_time < SCROLL_COOLDOWN_SECONDS:
+            return
+
         modifier_key = self._modifier_to_key(modifier_active)
         try:
             if modifier_key is not None:
                 pyautogui_module.keyDown(modifier_key)
             pyautogui_module.scroll(scroll_units)
+            self._last_scroll_time = now
         except Exception as exc:
             LOGGER.exception("Scroll dispatch failed: %s", exc)
         finally:
@@ -1235,9 +1708,11 @@ class KinesysGestureEngineApp:
     def _perform_zoom(self, pyautogui_module: Any, direction: int) -> None:
         """Execute a Ctrl+scroll zoom step."""
 
+        # Normalize direction to ±ZOOM_SPEED
+        zoom_amount = ZOOM_SPEED if direction > 0 else -ZOOM_SPEED
         try:
             pyautogui_module.keyDown(KEY_CTRL)
-            pyautogui_module.scroll(direction)
+            pyautogui_module.scroll(zoom_amount)
         except Exception as exc:
             LOGGER.exception("Zoom dispatch failed: %s", exc)
         finally:
@@ -1257,10 +1732,17 @@ class KinesysGestureEngineApp:
     def _calculate_scroll_units(self, palm_dy: float) -> int:
         """Convert vertical swipe motion into a bounded scroll command."""
 
-        average_delta = -palm_dy / float(GESTURE_HISTORY_FRAMES)
-        if abs(average_delta) < SCROLL_MIN_STEP:
+        raw_scroll_delta = (-palm_dy / float(SCROLL_DELTA_DIVISOR)) * float(SCROLL_SPEED)
+        self._smoothed_scroll_units = (
+            (SCROLL_SMOOTHING_ALPHA * raw_scroll_delta)
+            + ((1.0 - SCROLL_SMOOTHING_ALPHA) * self._smoothed_scroll_units)
+        )
+        threshold = max(float(SCROLL_MIN_STEP), SCROLL_TRIGGER_THRESHOLD)
+        if abs(self._smoothed_scroll_units) < threshold:
             return 0
-        return int(average_delta / SCROLL_DELTA_DIVISOR)
+
+        bounded_units = int(round(self._smoothed_scroll_units))
+        return max(-SCROLL_MAX_STEP, min(SCROLL_MAX_STEP, bounded_units))
 
     @staticmethod
     def _modifier_to_key(modifier_active: str | None) -> str | None:
@@ -1330,6 +1812,18 @@ class KinesysGestureEngineApp:
         if self._state != STATE_WRITE and next_state == STATE_WRITE and self._air_writer is not None:
             self._air_writer.start_session()
             self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
+
+        if self._state == STATE_LAUNCHER and next_state != STATE_LAUNCHER and self._air_writer is not None:
+            self._air_writer.stop_session()
+            self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
+
+        if self._state != STATE_LAUNCHER and next_state == STATE_LAUNCHER and self._air_writer is not None:
+            self._air_writer.start_session()
+            self._last_write_confidence = SHARED_STATE_DEFAULT_CONFIDENCE
+
+        if next_state != STATE_SCROLL:
+            self._smoothed_scroll_units = 0.0
+            self._last_scroll_time = 0.0
 
         self._state = next_state
         self._state_entered_at = time.perf_counter()
@@ -1413,6 +1907,21 @@ class KinesysGestureEngineApp:
             ),
             color=HUD_TEXT_COLOR,
         )
+        # Gesture-terminate progress bar (both fists held)
+        gesture_term_progress = self._gesture_terminate_tracker.progress(True)
+        if gesture_term_progress > 0:
+            self._put_hud_text(
+                cv2_module=cv2_module,
+                frame=frame,
+                font_face=font_face,
+                line_index=4,
+                text=(
+                    f"SHUTDOWN: {'|' * gesture_term_progress}"
+                    f"{'.' * (TERMINATE_GESTURE_HOLD_FRAMES - gesture_term_progress)}"
+                    f" {gesture_term_progress}/{TERMINATE_GESTURE_HOLD_FRAMES}"
+                ),
+                color=HUD_WARNING_COLOR,
+            )
         self._put_hud_text(
             cv2_module=cv2_module,
             frame=frame,
@@ -1453,6 +1962,16 @@ class KinesysGestureEngineApp:
             text=f"Text: {recognized_preview}",
             color=HUD_TEXT_COLOR,
         )
+        launcher_preview = f"Launcher: {self._launcher_word_buffer or '-'}" if self._state == STATE_LAUNCHER else ""
+        if launcher_preview:
+            self._put_hud_text(
+                cv2_module=cv2_module,
+                frame=frame,
+                font_face=font_face,
+                line_index=9,
+                text=launcher_preview,
+                color=DISPLAY_STATE_COLORS[STATE_LAUNCHER],
+            )
         self._put_hud_text(
             cv2_module=cv2_module,
             frame=frame,

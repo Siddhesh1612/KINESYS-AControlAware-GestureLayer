@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 import cv2
+import numpy as np
 
 from config import (
     DASHBOARD_HEADLESS,
@@ -47,6 +48,8 @@ from config import (
     STATE_MACRO,
     STATE_SCROLL,
     STATE_WRITE,
+    WEBCAM_HEIGHT,
+    WEBCAM_WIDTH,
 )
 from voice_feedback import VoiceFeedback
 
@@ -63,9 +66,17 @@ OVERLAY_PANEL_WIDTH = 520
 PROCESS_WAIT_TIMEOUT_SECONDS = 2.0
 PLAYBACK_START_MESSAGE = "Kinesys demo playback"
 PLAYBACK_STOP_MESSAGE = "Playback stopped"
+SYNTHETIC_PLAYBACK_MESSAGE = "Using synthetic fallback demo"
 PLAYBACK_EXIT_CODE_SUCCESS = 0
 PLAYBACK_EXIT_CODE_FAILURE = 1
 NO_DASHBOARD_FLAG = "--no-dashboard"
+SYNTHETIC_CURSOR_RADIUS = 18
+SYNTHETIC_PANEL_COLOR = (18, 18, 18)
+SYNTHETIC_BACKGROUND_TOP = (26, 38, 92)
+SYNTHETIC_BACKGROUND_BOTTOM = (10, 10, 10)
+SYNTHETIC_ACCENT = (15, 110, 86)
+SYNTHETIC_TEXT_COLOR = (255, 255, 255)
+SYNTHETIC_TOTAL_PADDING_SECONDS = 3.0
 
 
 @dataclass(slots=True)
@@ -105,22 +116,23 @@ class DemoPlaybackApp:
     def run(self) -> int:
         """Start the backup demo playback and return a process exit code."""
 
-        if not self._video_path.exists():
-            LOGGER.error("Demo video not found: %s", self._video_path)
-            print(f"Demo video not found: {self._video_path}")
-            self._shutdown()
-            return PLAYBACK_EXIT_CODE_FAILURE
-
         metadata_events = self._load_metadata_events()
         if self._launch_dashboard:
             self._dashboard_process = self._start_dashboard()
 
+        if not self._video_path.exists():
+            LOGGER.warning("Demo video not found, using synthetic fallback: %s", self._video_path)
+            print(f"Demo video not found, using synthetic fallback: {self._video_path}")
+            self._voice_feedback.speak(SYNTHETIC_PLAYBACK_MESSAGE)
+            return self._run_synthetic_playback(metadata_events)
+
         capture = cv2.VideoCapture(str(self._video_path))
         if not capture.isOpened():
-            LOGGER.error("Unable to open demo video: %s", self._video_path)
-            print(f"Unable to open demo video: {self._video_path}")
-            self._shutdown()
-            return PLAYBACK_EXIT_CODE_FAILURE
+            LOGGER.warning("Unable to open demo video, using synthetic fallback: %s", self._video_path)
+            print(f"Unable to open demo video, using synthetic fallback: {self._video_path}")
+            self._voice_feedback.speak(SYNTHETIC_PLAYBACK_MESSAGE)
+            capture.release()
+            return self._run_synthetic_playback(metadata_events)
 
         fps = capture.get(cv2.CAP_PROP_FPS) or DEMO_FPS_FALLBACK
         frame_delay_ms = max(int(1000.0 / float(fps)), WINDOW_CLOSE_WAIT_MS)
@@ -151,6 +163,41 @@ class DemoPlaybackApp:
             self._voice_feedback.speak(PLAYBACK_STOP_MESSAGE)
         finally:
             capture.release()
+            cv2.destroyAllWindows()
+            self._shutdown()
+
+        return PLAYBACK_EXIT_CODE_SUCCESS
+
+    def _run_synthetic_playback(self, metadata_events: list[PlaybackEvent]) -> int:
+        """Render a generated demo sequence when no prerecorded video is available."""
+
+        frame_delay_ms = max(int(1000.0 / DEMO_FPS_FALLBACK), WINDOW_CLOSE_WAIT_MS)
+        playback_started_at = time.perf_counter()
+        playback_duration = metadata_events[-1].timestamp_seconds + SYNTHETIC_TOTAL_PADDING_SECONDS
+        self._voice_feedback.speak(PLAYBACK_START_MESSAGE)
+
+        try:
+            while True:
+                elapsed_seconds = time.perf_counter() - playback_started_at
+                if not self._loop_video and elapsed_seconds > playback_duration:
+                    break
+
+                timeline_seconds = elapsed_seconds
+                if self._loop_video and playback_duration > 0.0:
+                    timeline_seconds = elapsed_seconds % playback_duration
+
+                active_event = self._select_event(metadata_events, timeline_seconds)
+                frame = self._build_synthetic_frame(event=active_event, elapsed_seconds=timeline_seconds)
+                self._write_snapshot(frame=frame, event=active_event, fps=DEMO_FPS_FALLBACK)
+
+                cv2.imshow(DEMO_WINDOW_NAME, frame)
+                pressed_key = cv2.waitKey(frame_delay_ms) & 0xFF
+                if pressed_key == ord(EXIT_KEY):
+                    self._voice_feedback.speak(PLAYBACK_STOP_MESSAGE)
+                    break
+        except KeyboardInterrupt:
+            self._voice_feedback.speak(PLAYBACK_STOP_MESSAGE)
+        finally:
             cv2.destroyAllWindows()
             self._shutdown()
 
@@ -233,6 +280,56 @@ class DemoPlaybackApp:
                 cv2.FONT_HERSHEY_SIMPLEX,
                 HUD_FONT_SCALE,
                 HUD_TEXT_COLOR,
+                HUD_FONT_THICKNESS,
+                cv2.LINE_AA,
+            )
+
+        return frame
+
+    def _build_synthetic_frame(self, event: PlaybackEvent, elapsed_seconds: float) -> Any:
+        """Render a generated fallback frame that still looks like a live demo timeline."""
+
+        frame = np.zeros((WEBCAM_HEIGHT, WEBCAM_WIDTH, 3), dtype=np.uint8)
+
+        for row in range(WEBCAM_HEIGHT):
+            blend = row / max(WEBCAM_HEIGHT - 1, 1)
+            color = [
+                int((1.0 - blend) * SYNTHETIC_BACKGROUND_TOP[channel] + blend * SYNTHETIC_BACKGROUND_BOTTOM[channel])
+                for channel in range(3)
+            ]
+            frame[row, :] = color
+
+        pulse = (np.sin(elapsed_seconds * 2.0) + 1.0) / 2.0
+        cursor_x = int((0.15 + (0.7 * pulse)) * WEBCAM_WIDTH)
+        cursor_y = int((0.25 + (0.35 * abs(np.cos(elapsed_seconds * 1.5)))) * WEBCAM_HEIGHT)
+        cv2.circle(frame, (cursor_x, cursor_y), SYNTHETIC_CURSOR_RADIUS, SYNTHETIC_ACCENT, -1)
+        cv2.circle(frame, (cursor_x, cursor_y), SYNTHETIC_CURSOR_RADIUS + 10, SYNTHETIC_TEXT_COLOR, 2)
+
+        panel = frame.copy()
+        panel_height = HUD_MARGIN_Y + (HUD_LINE_HEIGHT * 8)
+        cv2.rectangle(panel, (0, 0), (OVERLAY_PANEL_WIDTH, panel_height), SYNTHETIC_PANEL_COLOR, cv2.FILLED)
+        cv2.addWeighted(panel, HUD_PANEL_ALPHA, frame, 1.0 - HUD_PANEL_ALPHA, 0.0, frame)
+
+        overlay_lines = [
+            "Mode: synthetic backup demo",
+            f"State: {event.gesture_state}",
+            f"App: {event.active_app}",
+            f"Profile: {event.active_profile}",
+            f"Modifier: {event.modifier_active or 'none'}",
+            f"Text: {event.recognized_text or '-'}",
+            f"Confidence: {event.confidence:.2f}",
+            f"Fatigue: {event.fatigue_level:.2f}",
+        ]
+
+        for index, text in enumerate(overlay_lines):
+            text_y = HUD_MARGIN_Y + (index * HUD_LINE_HEIGHT)
+            cv2.putText(
+                frame,
+                text,
+                (HUD_MARGIN_X, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                HUD_FONT_SCALE,
+                SYNTHETIC_TEXT_COLOR,
                 HUD_FONT_THICKNESS,
                 cv2.LINE_AA,
             )

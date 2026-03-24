@@ -64,7 +64,7 @@ pip install -r requirements.txt
 2. Validate the environment.
 
 ```powershell
-python check_setup.py
+python check_setup.py --strict
 ```
 
 3. Add your ngrok token if you want a public dashboard URL.
@@ -75,13 +75,14 @@ Create `.env` in the repo root:
 NGROK_AUTH_TOKEN=your_token_here
 ```
 
-4. Train the EMNIST model once if you want air-writing recognition instead of keyboard fallback.
+4. Train the EMNIST model before running the full system.
 
 ```powershell
 python models\train_emnist.py
 ```
 
-This creates `models/emnist_cnn.h5`. If the model is missing, KINESYS still runs and falls back to the floating keyboard path in write mode.
+This creates `models/emnist_cnn.h5`. The startup validator expects this file before `main.py` will continue, which keeps the runtime behavior consistent with the full system contract.
+The training script also exports `models/emnist_cnn.tflite` for CPU-friendly inference experiments.
 
 ## Running KINESYS
 
@@ -102,7 +103,7 @@ The startup sequence:
 
 ## Backup demo playback
 
-If the webcam fails on stage, use the prerecorded playback path:
+If the webcam fails on stage, use the backup playback path:
 
 ```powershell
 .\.venv\Scripts\python demo_playback.py
@@ -112,6 +113,8 @@ By default, the script looks for:
 
 - `demo_assets/demo_session.mp4`
 - `demo_assets/demo_session.json` (optional metadata timeline)
+
+If the video file is missing, `demo_playback.py` automatically switches to a built-in synthetic fallback demo so you still have a stage-safe backup path.
 
 You can also pass a custom file:
 

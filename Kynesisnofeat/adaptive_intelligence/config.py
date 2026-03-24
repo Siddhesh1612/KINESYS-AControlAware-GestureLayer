@@ -1,0 +1,8 @@
+CAMERA_ID = 1        # DroidCam — change to 2 if feed doesn't appear
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+SCROLL_SPEED = 4.0
+SMOOTHING_FACTOR = 5
+
+CANVAS_SIZE = 200
+DRAW_THICKNESS = 15

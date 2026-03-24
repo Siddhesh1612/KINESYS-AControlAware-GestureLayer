@@ -260,12 +260,12 @@ class AirWriter:
         self._hover_started_at = 0.0
 
     def start_session(self) -> None:
-        """Enable write mode and show the floating keyboard."""
+        """Enable write mode and keep the floating keyboard hidden by default."""
 
         self._session_active = True
         self.reset()
         self._keyboard_window.start()
-        self._keyboard_window.show()
+        self._keyboard_window.hide()
 
     def stop_session(self) -> None:
         """Disable write mode and hide the floating keyboard."""
@@ -458,7 +458,21 @@ class AirWriter:
         x_max = min(int(x_values.max()) + AIR_WRITER_PADDING, CANVAS_SIZE - 1)
 
         cropped = self._canvas[y_min : y_max + 1, x_min : x_max + 1]
-        resized = cv2.resize(cropped, (CHAR_SIZE, CHAR_SIZE), interpolation=cv2.INTER_AREA)
+
+        # Pad to square to preserve aspect ratio before resize
+        h, w = cropped.shape
+        side = max(h, w)
+        padded = np.zeros((side, side), dtype=np.uint8)
+        y_offset = (side - h) // 2
+        x_offset = (side - w) // 2
+        padded[y_offset : y_offset + h, x_offset : x_offset + w] = cropped
+
+        resized = cv2.resize(padded, (CHAR_SIZE, CHAR_SIZE), interpolation=cv2.INTER_AREA)
+
+        # EMNIST letters are stored transposed — rotate to match training orientation
+        resized = np.transpose(resized)
+        resized = np.fliplr(resized)
+
         normalized = resized.astype("float32") / float(FILLED_CANVAS_VALUE)
         input_tensor = normalized.reshape(1, CHAR_SIZE, CHAR_SIZE, 1)
 
@@ -474,7 +488,10 @@ class AirWriter:
         scores = predictions[0]
         predicted_index = int(np.argmax(scores))
         confidence = float(scores[predicted_index])
-        zero_based_index = predicted_index if len(scores) == EMNIST_CLASS_COUNT else max(predicted_index - 1, 0)
+
+        # EMNIST/letters labels are 1-indexed (1=A … 26=Z)
+        zero_based_index = (predicted_index - 1) if len(scores) == EMNIST_CLASS_COUNT + 1 else predicted_index
+        zero_based_index = max(0, zero_based_index)
 
         if confidence < WRITE_CONFIDENCE_THRESHOLD or zero_based_index >= EMNIST_CLASS_COUNT:
             return None, confidence

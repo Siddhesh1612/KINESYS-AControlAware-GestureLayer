@@ -19,16 +19,21 @@ from config import (
     EMNIST_CLASS_COUNT,
     EMNIST_CONV1_FILTERS,
     EMNIST_CONV2_FILTERS,
+    EMNIST_CONV3_FILTERS,
     EMNIST_DATASET_NAME,
     EMNIST_DENSE_UNITS,
     EMNIST_DROPOUT,
+    EMNIST_EARLY_STOPPING_PATIENCE,
     EMNIST_EPOCHS,
     EMNIST_INPUT_CHANNELS,
     EMNIST_KERNEL_SIZE,
     EMNIST_MODEL_FILE,
+    EMNIST_ROTATION_FACTOR,
     EMNIST_SHUFFLE_BUFFER,
     EMNIST_TEST_SPLIT,
+    EMNIST_TFLITE_FILE,
     EMNIST_TRAIN_SPLIT,
+    EMNIST_TRANSLATION_FACTOR,
     EMNIST_VALIDATION_SPLIT,
 )
 
@@ -36,6 +41,11 @@ from config import (
 AUTOTUNE = tf.data.AUTOTUNE
 LETTER_LABEL_OFFSET = 1
 MODEL_PARENT_DEPTH = 1
+VALIDATION_ACCURACY_MONITOR = "val_accuracy"
+MODEL_SAVE_MODE = "max"
+LOSS_NAME = "categorical_crossentropy"
+OPTIMIZER_NAME = "adam"
+ACCURACY_METRIC = "accuracy"
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,29 +105,75 @@ def build_datasets() -> tuple[tf.data.Dataset, tf.data.Dataset, tf.data.Dataset]
 def build_model() -> tf.keras.Model:
     """Create the convolutional network used for letter classification."""
 
-    return tf.keras.Sequential(
+    augmentation = tf.keras.Sequential(
         [
-            tf.keras.layers.Input(shape=(CHAR_SIZE, CHAR_SIZE, EMNIST_INPUT_CHANNELS)),
-            tf.keras.layers.Conv2D(
-                filters=EMNIST_CONV1_FILTERS,
-                kernel_size=EMNIST_KERNEL_SIZE,
-                activation="relu",
-                padding="same",
+            tf.keras.layers.RandomRotation(factor=EMNIST_ROTATION_FACTOR),
+            tf.keras.layers.RandomTranslation(
+                height_factor=EMNIST_TRANSLATION_FACTOR,
+                width_factor=EMNIST_TRANSLATION_FACTOR,
             ),
-            tf.keras.layers.MaxPooling2D(),
-            tf.keras.layers.Conv2D(
-                filters=EMNIST_CONV2_FILTERS,
-                kernel_size=EMNIST_KERNEL_SIZE,
-                activation="relu",
-                padding="same",
-            ),
-            tf.keras.layers.MaxPooling2D(),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(EMNIST_DENSE_UNITS, activation="relu"),
-            tf.keras.layers.Dropout(EMNIST_DROPOUT),
-            tf.keras.layers.Dense(EMNIST_CLASS_COUNT, activation="softmax"),
-        ]
+        ],
+        name="emnist_augmentation",
     )
+
+    inputs = tf.keras.layers.Input(shape=(CHAR_SIZE, CHAR_SIZE, EMNIST_INPUT_CHANNELS))
+    x = augmentation(inputs)
+    x = tf.keras.layers.Conv2D(
+        filters=EMNIST_CONV1_FILTERS,
+        kernel_size=EMNIST_KERNEL_SIZE,
+        activation="relu",
+        padding="same",
+    )(x)
+    x = tf.keras.layers.MaxPooling2D(pool_size=(2, 2))(x)
+    x = tf.keras.layers.Conv2D(
+        filters=EMNIST_CONV2_FILTERS,
+        kernel_size=EMNIST_KERNEL_SIZE,
+        activation="relu",
+        padding="same",
+    )(x)
+    x = tf.keras.layers.MaxPooling2D(pool_size=(2, 2))(x)
+    x = tf.keras.layers.Conv2D(
+        filters=EMNIST_CONV3_FILTERS,
+        kernel_size=EMNIST_KERNEL_SIZE,
+        activation="relu",
+        padding="same",
+    )(x)
+    x = tf.keras.layers.MaxPooling2D(pool_size=(2, 2))(x)
+    x = tf.keras.layers.Flatten()(x)
+    x = tf.keras.layers.Dense(EMNIST_DENSE_UNITS, activation="relu")(x)
+    x = tf.keras.layers.Dropout(EMNIST_DROPOUT)(x)
+    outputs = tf.keras.layers.Dense(EMNIST_CLASS_COUNT, activation="softmax")(x)
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name="kinesys_emnist_cnn")
+
+
+def build_callbacks(model_path: Path) -> list[tf.keras.callbacks.Callback]:
+    """Create the checkpointing and early-stopping callbacks for training."""
+
+    return [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(model_path),
+            monitor=VALIDATION_ACCURACY_MONITOR,
+            mode=MODEL_SAVE_MODE,
+            save_best_only=True,
+            verbose=1,
+        ),
+        tf.keras.callbacks.EarlyStopping(
+            monitor=VALIDATION_ACCURACY_MONITOR,
+            mode=MODEL_SAVE_MODE,
+            patience=EMNIST_EARLY_STOPPING_PATIENCE,
+            restore_best_weights=True,
+            verbose=1,
+        ),
+    ]
+
+
+def export_tflite(model: tf.keras.Model, destination: Path) -> None:
+    """Export the trained model as a TFLite artifact for CPU inference."""
+
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    tflite_model = converter.convert()
+    destination.write_bytes(tflite_model)
+    print(f"Saved TFLite model to {destination}")
 
 
 def main() -> int:
@@ -126,16 +182,20 @@ def main() -> int:
     args = parse_args()
     train_dataset, validation_dataset, test_dataset = build_datasets()
     model = build_model()
+    model_path = Path(EMNIST_MODEL_FILE)
+    model_path.parents[MODEL_PARENT_DEPTH - 1].mkdir(parents=True, exist_ok=True)
+    callbacks = build_callbacks(model_path)
     model.compile(
-        optimizer="adam",
-        loss="categorical_crossentropy",
-        metrics=["accuracy"],
+        optimizer=OPTIMIZER_NAME,
+        loss=LOSS_NAME,
+        metrics=[ACCURACY_METRIC],
     )
 
-    model.fit(
+    history = model.fit(
         train_dataset,
         validation_data=validation_dataset,
         epochs=args.epochs,
+        callbacks=callbacks,
         verbose=1,
     )
 
@@ -143,10 +203,12 @@ def main() -> int:
     print(f"Test loss: {test_loss:.4f}")
     print(f"Test accuracy: {test_accuracy:.4f}")
 
-    model_path = Path(EMNIST_MODEL_FILE)
-    model_path.parents[MODEL_PARENT_DEPTH - 1].mkdir(parents=True, exist_ok=True)
     model.save(model_path)
     print(f"Saved model to {model_path}")
+    print(f"Best validation accuracy: {max(history.history.get(VALIDATION_ACCURACY_MONITOR, [0.0])):.4f}")
+
+    tflite_path = Path(EMNIST_TFLITE_FILE)
+    export_tflite(model=model, destination=tflite_path)
     return 0
 
 
